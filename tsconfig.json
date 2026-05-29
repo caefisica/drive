@@ -1,0 +1,22 @@
+{
+  "extends": "./.void/tsconfig.json",
+  "files": ["./.void/db.d.ts", "./.void/env.d.ts"],
+  "compilerOptions": {
+    "types": ["void/env"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true
+  },
+  "include": [
+    "pages/**/*.ts",
+    "pages/**/*.vue",
+    "routes/**/*.ts",
+    "crons/**/*.ts",
+    "queues/**/*.ts",
+    "db/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "env.ts"
+  ],
+  "exclude": ["scripts"]
+}
