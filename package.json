@@ -27,7 +27,7 @@
     "vue": "^3.5.35"
   },
   "devDependencies": {
-    "@iconify-json/lucide": "^1.2.110",
+    "@iconify-json/lucide": "^1.2.129",
     "@types/markdown-it": "^14.1.2",
     "typescript": "^6.0.3",
     "wrangler": "^4.95.0"
