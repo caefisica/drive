@@ -1,4 +1,4 @@
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { defineHandler } from "void";
 import { db } from "void/db";
 
@@ -24,15 +24,14 @@ export const GET = defineHandler(async (c) => {
   }
 
   const drives = getDrives(c.env);
-  const pattern = `%${q}%`;
+  const pattern = `%${escapeLike(q)}%`;
+  const matchesName = sql`${driveItems.name} like ${pattern} escape '\\'`;
 
   const results = await db
     .select()
     .from(driveItems)
     .where(
-      driveIdx === undefined
-        ? like(driveItems.name, pattern)
-        : and(like(driveItems.name, pattern), eq(driveItems.driveIdx, driveIdx)),
+      driveIdx === undefined ? matchesName : and(matchesName, eq(driveItems.driveIdx, driveIdx)),
     )
     .limit(50);
 
@@ -55,6 +54,10 @@ ${results.length === 0 ? "<p>no results</p>" : `<ul>${rows}</ul>`}
 </body>
 </html>`);
 });
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
 
 function escapeHtml(value: string): string {
   return value
