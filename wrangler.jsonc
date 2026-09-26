@@ -1,6 +1,6 @@
 {
   "name": "drive",
-  "compatibility_date": "2026-05-01",
+  "compatibility_date": "2026-08-30",
   "d1_databases": [
     {
       "binding": "DB",

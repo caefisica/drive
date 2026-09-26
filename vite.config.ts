@@ -1,10 +1,10 @@
 import { voidVue } from "@void/vue/plugin";
-import { defineConfig } from "vite-plus";
+import { defineConfig, lazyPlugins } from "vite-plus";
 import { voidPlugin } from "void";
 import UnoCSS from "unocss/vite";
 
 export default defineConfig({
-  plugins: [voidPlugin(), UnoCSS(), ...voidVue()],
+  plugins: lazyPlugins(() => [voidPlugin(), UnoCSS(), ...voidVue()]),
   staged: {
     "*": "vp check --fix",
   },
