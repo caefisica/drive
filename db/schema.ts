@@ -15,7 +15,6 @@ export const driveItems = sqliteTable(
   (t) => [
     index("idx_di_parent").on(t.driveIdx, t.parentId),
     uniqueIndex("uq_di_path").on(t.driveIdx, t.urlPath),
-    index("idx_di_name").on(t.name),
   ],
 );
 
