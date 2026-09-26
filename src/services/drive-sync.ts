@@ -1,16 +1,33 @@
 import type { CloudEnv } from "void";
-import { and, eq } from "drizzle-orm";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 
 import { driveItems, syncState } from "../../db/schema";
 import { fetchChanges, getStartPageToken, listDirectory } from "../integrations/google-drive";
 
-// D1 rejects statements with more than 100 bound parameters; drive_items has 8 columns.
-const ROWS_PER_INSERT = Math.floor(100 / 8);
+// D1 rejects statements with more than 100 bound parameters.
+// A multi-row insert binds one parameter per column in each row.
+const ROWS_PER_INSERT = Math.floor(100 / Object.keys(getTableColumns(driveItems)).length);
 
 function makeDb(env: CloudEnv["Bindings"]) {
   return drizzle(env.DB);
+}
+
+function chunkRows<T>(rows: T[]): T[][] {
+  const chunks: T[][] = [];
+
+  for (let start = 0; start < rows.length; start += ROWS_PER_INSERT) {
+    chunks.push(rows.slice(start, start + ROWS_PER_INSERT));
+  }
+
+  return chunks;
+}
+
+// Returns the value proposed by the conflicting insert, not the column's current value.
+function incoming(column: SQLiteColumn) {
+  return sql.raw(`excluded."${column.name}"`);
 }
 
 export async function runIncrementalSync(
@@ -157,19 +174,24 @@ export async function crawlFolder(
     }));
 
     if (rows.length > 0) {
-      await db
-        .insert(driveItems)
-        .values(rows)
-        .onConflictDoUpdate({
-          target: driveItems.id,
-          set: {
-            name: driveItems.name,
-            mimeType: driveItems.mimeType,
-            size: driveItems.size,
-            modifiedTime: driveItems.modifiedTime,
-            urlPath: driveItems.urlPath,
-          },
-        });
+      const statements = chunkRows(rows).map((chunk): BatchItem<"sqlite"> =>
+        db
+          .insert(driveItems)
+          .values(chunk)
+          .onConflictDoUpdate({
+            target: driveItems.id,
+            set: {
+              parentId: incoming(driveItems.parentId),
+              name: incoming(driveItems.name),
+              mimeType: incoming(driveItems.mimeType),
+              size: incoming(driveItems.size),
+              modifiedTime: incoming(driveItems.modifiedTime),
+              urlPath: incoming(driveItems.urlPath),
+            },
+          }),
+      );
+
+      await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
     }
 
     for (const file of result.files) {
@@ -260,13 +282,9 @@ export async function backfillD1Items(
     urlPath: file.urlPath,
   }));
 
-  const statements: BatchItem<"sqlite">[] = [];
-
-  for (let start = 0; start < rows.length; start += ROWS_PER_INSERT) {
-    const chunk = rows.slice(start, start + ROWS_PER_INSERT);
-
-    statements.push(db.insert(driveItems).values(chunk).onConflictDoNothing());
-  }
+  const statements = chunkRows(rows).map((chunk): BatchItem<"sqlite"> =>
+    db.insert(driveItems).values(chunk).onConflictDoNothing(),
+  );
 
   await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
 }
