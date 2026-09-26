@@ -1,16 +1,20 @@
 import { defineScheduled } from "void";
-import { runIncrementalSync } from "../src/services/drive-sync";
+
 import { getDrives } from "../src/config";
+import { runIncrementalSync } from "../src/services/drive-sync";
 
 export const cron = "*/15 * * * *";
 
-export default defineScheduled(async (_controller, env) => {
+export default defineScheduled(async (_, env) => {
   const drives = getDrives(env);
-  for (const drive of drives) {
-    try {
-      await runIncrementalSync(drive.idx, env);
-    } catch (err) {
-      console.error(`[cron] sync failed for drive ${drive.idx}:`, err);
-    }
+  const results = await Promise.allSettled(
+    drives.map((drive) => runIncrementalSync(drive.idx, env)),
+  );
+
+  for (const [i, result] of results.entries()) {
+    if (result.status !== "rejected") continue;
+
+    const drive = drives[i];
+    console.error(`[cron] sync failed for drive ${drive.idx}:`, result.reason);
   }
 });

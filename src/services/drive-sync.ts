@@ -1,8 +1,13 @@
 import type { CloudEnv } from "void";
+import { and, eq } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
-import { eq, and } from "drizzle-orm";
-import { fetchChanges, getStartPageToken, listDirectory } from "../integrations/google-drive";
+
 import { driveItems, syncState } from "../../db/schema";
+import { fetchChanges, getStartPageToken, listDirectory } from "../integrations/google-drive";
+
+// D1 rejects statements with more than 100 bound parameters; drive_items has 8 columns.
+const ROWS_PER_INSERT = Math.floor(100 / 8);
 
 function makeDb(env: CloudEnv["Bindings"]) {
   return drizzle(env.DB);
@@ -15,6 +20,7 @@ export async function runIncrementalSync(
   const db = makeDb(env);
 
   const [state] = await db.select().from(syncState).where(eq(syncState.driveIdx, driveIdx));
+
   if (!state?.pageToken) {
     console.log(`[sync] drive ${driveIdx}: no pageToken, skipping (run full crawl first)`);
     return;
@@ -23,54 +29,76 @@ export async function runIncrementalSync(
   await db.update(syncState).set({ status: "syncing" }).where(eq(syncState.driveIdx, driveIdx));
 
   let pageToken = state.pageToken;
+
   try {
     while (true) {
       const result = await fetchChanges(driveIdx, pageToken, env);
+      const statements: BatchItem<"sqlite">[] = [];
+      const touchedIds: string[] = [];
 
       for (const change of result.changes) {
         if (change.removed || change.file?.trashed) {
-          await db
-            .delete(driveItems)
-            .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.id, change.fileId)));
-          await invalidateKvForFile(change.fileId, driveIdx, env);
+          statements.push(
+            db
+              .delete(driveItems)
+              .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.id, change.fileId))),
+          );
+
+          touchedIds.push(change.fileId);
           continue;
         }
 
-        if (!change.file) continue;
-        const f = change.file;
+        if (!change.file) {
+          continue;
+        }
 
-        await db
-          .insert(driveItems)
-          .values({
-            id: f.id,
-            driveIdx,
-            parentId: f.parents?.[0] ?? null,
-            name: f.name,
-            mimeType: f.mimeType,
-            size: f.size,
-            modifiedTime: f.modifiedTime ? new Date(f.modifiedTime).getTime() : null,
-            urlPath: null,
-          })
-          .onConflictDoUpdate({
-            target: driveItems.id,
-            set: {
-              parentId: f.parents?.[0] ?? null,
-              name: f.name,
-              mimeType: f.mimeType,
-              size: f.size,
-              modifiedTime: f.modifiedTime ? new Date(f.modifiedTime).getTime() : null,
+        const file = change.file;
+        const modifiedTime = file.modifiedTime ? new Date(file.modifiedTime).getTime() : null;
+
+        statements.push(
+          db
+            .insert(driveItems)
+            .values({
+              id: file.id,
+              driveIdx,
+              parentId: file.parents?.[0] ?? null,
+              name: file.name,
+              mimeType: file.mimeType,
+              size: file.size,
+              modifiedTime,
               urlPath: null,
-            },
-          });
+            })
+            .onConflictDoUpdate({
+              target: driveItems.id,
+              set: {
+                parentId: file.parents?.[0] ?? null,
+                name: file.name,
+                mimeType: file.mimeType,
+                size: file.size,
+                modifiedTime,
+                urlPath: null,
+              },
+            }),
+        );
 
-        await invalidateKvForFile(f.id, driveIdx, env);
+        touchedIds.push(file.id);
+      }
+
+      if (statements.length > 0) {
+        await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+
+        await Promise.all(touchedIds.map((id) => invalidateKvForFile(id, driveIdx, env)));
       }
 
       if (result.newStartPageToken) {
         pageToken = result.newStartPageToken;
         break;
       }
-      if (!result.nextPageToken) break;
+
+      if (!result.nextPageToken) {
+        break;
+      }
+
       pageToken = result.nextPageToken;
     }
 
@@ -82,9 +110,10 @@ export async function runIncrementalSync(
         status: "idle",
       })
       .where(eq(syncState.driveIdx, driveIdx));
-  } catch (err) {
+  } catch (error) {
     await db.update(syncState).set({ status: "error" }).where(eq(syncState.driveIdx, driveIdx));
-    throw err;
+
+    throw error;
   }
 }
 
@@ -102,7 +131,10 @@ export async function crawlFolder(
   folderId: string,
   urlPath: string,
   env: CloudEnv["Bindings"],
-): Promise<{ fileCount: number; folderIds: Array<{ id: string; path: string }> }> {
+): Promise<{
+  fileCount: number;
+  folderIds: Array<{ id: string; path: string }>;
+}> {
   const db = makeDb(env);
   let pageToken: string | undefined;
   let fileCount = 0;
@@ -111,15 +143,17 @@ export async function crawlFolder(
   do {
     const result = await listDirectory(driveIdx, folderId, env, pageToken);
 
-    const rows = result.files.map((f) => ({
-      id: f.id,
+    const rows = result.files.map((file) => ({
+      id: file.id,
       driveIdx,
       parentId: folderId,
-      name: f.name,
-      mimeType: f.mimeType,
-      size: f.size,
-      modifiedTime: f.modifiedTime ? new Date(f.modifiedTime).getTime() : null,
-      urlPath: `${urlPath}${f.name}${f.mimeType === "application/vnd.google-apps.folder" ? "/" : ""}`,
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+      modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
+      urlPath: `${urlPath}${file.name}${
+        file.mimeType === "application/vnd.google-apps.folder" ? "/" : ""
+      }`,
     }));
 
     if (rows.length > 0) {
@@ -138,9 +172,12 @@ export async function crawlFolder(
         });
     }
 
-    for (const f of result.files) {
-      if (f.mimeType === "application/vnd.google-apps.folder") {
-        folderIds.push({ id: f.id, path: `${urlPath}${f.name}/` });
+    for (const file of result.files) {
+      if (file.mimeType === "application/vnd.google-apps.folder") {
+        folderIds.push({
+          id: file.id,
+          path: `${urlPath}${file.name}/`,
+        });
       } else {
         fileCount++;
       }
@@ -158,12 +195,23 @@ export async function initializeSyncState(
 ): Promise<void> {
   const db = makeDb(env);
   const pageToken = await getStartPageToken(driveIdx, env);
+  const now = Date.now();
+
   await db
     .insert(syncState)
-    .values({ driveIdx, pageToken, lastSyncedAt: Date.now(), status: "crawling" })
+    .values({
+      driveIdx,
+      pageToken,
+      lastSyncedAt: now,
+      status: "crawling",
+    })
     .onConflictDoUpdate({
       target: syncState.driveIdx,
-      set: { pageToken, lastSyncedAt: Date.now(), status: "crawling" },
+      set: {
+        pageToken,
+        lastSyncedAt: now,
+        status: "crawling",
+      },
     });
 }
 
@@ -172,31 +220,53 @@ export async function markCrawlComplete(
   env: CloudEnv["Bindings"],
 ): Promise<void> {
   const db = makeDb(env);
+
   await db
     .update(syncState)
-    .set({ status: "idle", lastSyncedAt: Date.now() })
+    .set({
+      status: "idle",
+      lastSyncedAt: Date.now(),
+    })
     .where(eq(syncState.driveIdx, driveIdx));
 }
 
-export async function backfillD1Item(
+export async function backfillD1Items(
   driveIdx: number,
   parentId: string,
-  file: { id: string; name: string; mimeType: string; size?: number; modifiedTime?: string },
-  urlPath: string,
+  files: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    size?: number;
+    modifiedTime?: string;
+    urlPath: string;
+  }>,
   env: CloudEnv["Bindings"],
 ): Promise<void> {
+  if (files.length === 0) {
+    return;
+  }
+
   const db = makeDb(env);
-  await db
-    .insert(driveItems)
-    .values({
-      id: file.id,
-      driveIdx,
-      parentId,
-      name: file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
-      urlPath,
-    })
-    .onConflictDoNothing();
+
+  const rows = files.map((file) => ({
+    id: file.id,
+    driveIdx,
+    parentId,
+    name: file.name,
+    mimeType: file.mimeType,
+    size: file.size,
+    modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
+    urlPath: file.urlPath,
+  }));
+
+  const statements: BatchItem<"sqlite">[] = [];
+
+  for (let start = 0; start < rows.length; start += ROWS_PER_INSERT) {
+    const chunk = rows.slice(start, start + ROWS_PER_INSERT);
+
+    statements.push(db.insert(driveItems).values(chunk).onConflictDoNothing());
+  }
+
+  await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
 }
