@@ -6,8 +6,8 @@ import { getPlatformProxy } from "wrangler";
 
 import { driveItems, syncState } from "../../db/schema";
 import type { DriveChange, DriveChangesResult } from "../integrations/google-drive";
-import { fetchChanges } from "../integrations/google-drive";
-import { backfillD1Items, runIncrementalSync } from "./drive-sync";
+import { fetchChanges, listDirectory } from "../integrations/google-drive";
+import { backfillD1Items, crawlFolder, runIncrementalSync } from "./drive-sync";
 
 vi.mock("../integrations/google-drive", () => ({
   fetchChanges: vi.fn(),
@@ -27,7 +27,7 @@ let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Env;
 let batchSizes: number[];
 
-// Delegates to the real local D1 and records how many statements each batch() call carries.
+// Delegates to local D1 and records each batch's statement count.
 function recordBatches(db: D1Database): D1Database {
   return new Proxy(db, {
     get(target, property) {
@@ -94,6 +94,7 @@ beforeEach(async () => {
   await db.delete(syncState);
   await db.insert(syncState).values({ driveIdx: 0, pageToken: "start", status: "idle" });
   vi.mocked(fetchChanges).mockReset();
+  vi.mocked(listDirectory).mockReset();
   batchSizes = [];
 });
 
@@ -156,5 +157,48 @@ describe("backfillD1Items", () => {
 
     expect(batchSizes).toEqual([9]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(100);
+  });
+});
+
+describe("crawlFolder", () => {
+  it("stores every file of a 200-file listing page in one D1 batch", async () => {
+    const files = Array.from({ length: 200 }, (_, i) => ({
+      id: `f${i}`,
+      name: `f${i}.txt`,
+      mimeType: "text/plain",
+    }));
+    vi.mocked(listDirectory).mockResolvedValueOnce({ files });
+
+    const result = await crawlFolder(0, "root", "/0/", env);
+
+    expect(result.fileCount).toBe(200);
+    expect(batchSizes).toEqual([17]);
+    expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(200);
+  });
+
+  it("updates a re-crawled file that was renamed, moved and resized", async () => {
+    const db = drizzle(env.DB);
+    const file = { id: "f1", name: "old.txt", mimeType: "text/plain", size: 1 };
+
+    vi.mocked(listDirectory).mockResolvedValueOnce({ files: [file] });
+    await crawlFolder(0, "folderA", "/0/a/", env);
+
+    vi.mocked(listDirectory).mockResolvedValueOnce({
+      files: [{ ...file, name: "new.md", mimeType: "text/markdown", size: 2 }],
+    });
+    await crawlFolder(0, "folderB", "/0/b/", env);
+
+    expect(await db.select().from(driveItems)).toEqual([
+      {
+        id: "f1",
+        driveIdx: 0,
+        parentId: "folderB",
+        name: "new.md",
+        mimeType: "text/markdown",
+        size: 2,
+        modifiedTime: null,
+        urlPath: "/0/b/new.md",
+      },
+    ]);
   });
 });
