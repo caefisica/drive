@@ -6,12 +6,17 @@
  *   bun --env-file=.env.local scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123
  *
  * This stores a PBKDF2 hash in KV under `passwd:{driveIdx}:{folderId}`.
- * For the drive root password, folderId is "root".
+ * Without --folder-id the password locks the drive root, whose id is the drive's
+ * rootId in DRIVES ("root" for a My Drive root).
  *
  * For remote: use wrangler to write KV directly after computing the hash locally.
  */
 
+import type { CloudEnv } from "void";
+
+import { getDrive } from "../src/config";
 import { hashPassword } from "../src/services/crypto";
+import { passwordKey } from "../src/services/folder-access";
 
 const args = process.argv.slice(2);
 function getArg(flag: string): string | undefined {
@@ -21,7 +26,6 @@ function getArg(flag: string): string | undefined {
 
 const driveIdx = parseInt(getArg("--drive") ?? "0", 10);
 const password = getArg("--password");
-const folderId = getArg("--folder-id") ?? "root";
 
 if (!password) {
   console.error(
@@ -30,11 +34,19 @@ if (!password) {
   process.exit(1);
 }
 
+const drive = getDrive(driveIdx, { DRIVES: process.env.DRIVES ?? "[]" } as CloudEnv["Bindings"]);
+if (!drive) {
+  console.error(`drive ${driveIdx} is not in DRIVES`);
+  process.exit(1);
+}
+
+const folderId = getArg("--folder-id") ?? drive.rootId;
+
 const salt = crypto.getRandomValues(new Uint8Array(16));
 const saltStr = btoa(String.fromCharCode(...salt));
 const hash = await hashPassword(password, saltStr);
 
-const kvKey = `passwd:${driveIdx}:${folderId}`;
+const kvKey = passwordKey(driveIdx, folderId);
 console.log(`KV key:  ${kvKey}`);
 console.log(`KV hash: ${hash}`);
 console.log("");
