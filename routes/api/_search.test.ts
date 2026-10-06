@@ -6,6 +6,7 @@ import type { CloudEnv } from "void";
 import { getPlatformProxy } from "wrangler";
 
 import { driveItems } from "../../db/schema";
+import { signUnlockCookie } from "../../src/services/crypto";
 
 const local = vi.hoisted(() => ({ db: undefined as unknown }));
 
@@ -23,6 +24,7 @@ const migrations = import.meta.glob<string>("../../db/migrations/*.sql", {
 
 let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let d1: D1Database;
+let kv: KVNamespace;
 let app: Hono<CloudEnv>;
 
 async function applyMigrations(db: D1Database) {
@@ -38,14 +40,48 @@ async function applyMigrations(db: D1Database) {
   }
 }
 
-async function search(q: string): Promise<string> {
-  const response = await app.request(`/?q=${encodeURIComponent(q)}`, {}, { DRIVES: "[]" });
+const UNLOCK_SECRET = "test-unlock-secret";
+
+const drive = {
+  name: "d",
+  rootId: "root",
+  clientId: "c",
+  clientSecret: "s",
+  refreshToken: "r",
+};
+
+async function search(q: string, options: { unlocked?: string[]; drive?: number } = {}) {
+  const headers: Record<string, string> = {};
+
+  if (options.unlocked) {
+    const cookie = await signUnlockCookie(
+      options.unlocked.map((f) => ({ d: 0, f })),
+      UNLOCK_SECRET,
+    );
+    headers.cookie = `drive_unlock=${encodeURIComponent(cookie)}`;
+  }
+
+  const query =
+    `q=${encodeURIComponent(q)}` + (options.drive === undefined ? "" : `&d=${options.drive}`);
+  const env = {
+    DRIVES: JSON.stringify([drive, drive]),
+    KV: kv,
+    UNLOCK_SECRET,
+  };
+  const response = await app.request(`/?${query}`, { headers }, env);
   return response.text();
+}
+
+async function lock(driveIdx: number, folderId: string) {
+  await kv.put(`passwd:${driveIdx}:${folderId}`, "pbkdf2:salt:hash");
 }
 
 beforeAll(async () => {
   proxy = await getPlatformProxy({ persist: false });
-  d1 = (proxy.env as unknown as { DB: D1Database }).DB;
+  ({ DB: d1, KV: kv } = proxy.env as unknown as {
+    DB: D1Database;
+    KV: KVNamespace;
+  });
   await applyMigrations(d1);
   local.db = drizzle(d1);
 
@@ -69,7 +105,36 @@ beforeEach(async () => {
       urlPath: `/0/${name}`,
     })),
   );
+
+  for (const { name } of (await kv.list({ prefix: "passwd:" })).keys) {
+    await kv.delete(name);
+  }
 });
+
+// The fixture nests vault/ inside root/ and deep/ inside vault/. Drive 1 reuses the
+// vault folder ID, so its file verifies that locks are scoped to a drive.
+async function seedTree() {
+  const item = (id: string, name: string, parentId: string, mimeType = "text/plain") => ({
+    id,
+    driveIdx: 0,
+    parentId,
+    name,
+    mimeType,
+    urlPath: `/0/${name}`,
+  });
+  const folder = "application/vnd.google-apps.folder";
+
+  await drizzle(d1)
+    .insert(driveItems)
+    .values([
+      item("pub", "tree-public.txt", "root"),
+      item("vault", "tree-vault", "root", folder),
+      item("inner", "tree-inner.txt", "vault"),
+      item("deep", "tree-deep", "vault", folder),
+      item("deepest", "tree-deepest.txt", "deep"),
+      { ...item("other", "tree-other-drive.txt", "vault"), driveIdx: 1 },
+    ]);
+}
 
 describe("GET /api/search", () => {
   it("treats % in the query as a literal character", async () => {
@@ -91,5 +156,84 @@ describe("GET /api/search", () => {
 
     expect(html).toContain(">a\\b</a>");
     expect(html).not.toContain(">abc</a>");
+  });
+
+  describe("folder passwords", () => {
+    beforeEach(seedTree);
+
+    it("lists everything when no folder has a password", async () => {
+      const html = await search("tree-");
+
+      for (const name of ["public", "vault", "inner", "deep", "deepest", "other-drive"]) {
+        expect(html).toContain(name);
+      }
+    });
+
+    it("hides names at every depth of a locked folder from an unauthenticated reader", async () => {
+      await lock(0, "vault");
+
+      const html = await search("tree-");
+
+      expect(html).toContain("tree-public.txt");
+      expect(html).not.toContain("tree-inner.txt");
+      expect(html).not.toContain("tree-deep");
+      expect(html).not.toContain("tree-deepest.txt");
+    });
+
+    it("keeps the locked folder's own entry and other drives visible", async () => {
+      await lock(0, "vault");
+
+      const html = await search("tree-");
+
+      expect(html).toContain(">tree-vault</a>");
+      expect(html).toContain("tree-other-drive.txt");
+    });
+
+    it("hides locked names from a drive-scoped search too", async () => {
+      await lock(0, "vault");
+
+      const html = await search("tree-", { drive: 0 });
+
+      expect(html).not.toContain("tree-inner.txt");
+    });
+
+    it("shows a locked folder's names once the reader has unlocked it", async () => {
+      await lock(0, "vault");
+
+      const html = await search("tree-", { unlocked: ["vault"] });
+
+      expect(html).toContain("tree-inner.txt");
+      expect(html).toContain("tree-deepest.txt");
+    });
+
+    it("does not treat unlocking an inner folder as unlocking its locked parent", async () => {
+      await lock(0, "vault");
+      await lock(0, "deep");
+
+      const html = await search("tree-", { unlocked: ["deep"] });
+
+      expect(html).not.toContain("tree-inner.txt");
+      expect(html).not.toContain("tree-deepest.txt");
+    });
+
+    it("needs every locked ancestor unlocked", async () => {
+      await lock(0, "vault");
+      await lock(0, "deep");
+
+      const html = await search("tree-", { unlocked: ["vault"] });
+
+      expect(html).toContain("tree-inner.txt");
+      expect(html).not.toContain("tree-deepest.txt");
+    });
+
+    it("hides a whole drive whose root is locked", async () => {
+      await lock(0, "root");
+
+      const html = await search("tree-");
+
+      expect(html).not.toContain("tree-public.txt");
+      expect(html).not.toContain("tree-inner.txt");
+      expect(html).toContain("tree-other-drive.txt");
+    });
   });
 });
