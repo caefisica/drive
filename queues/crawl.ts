@@ -1,11 +1,11 @@
 import { defineQueue } from "void";
 import { queues } from "void/queues";
-import { crawlFolder, initializeSyncState } from "../src/services/drive-sync";
+import { crawlFolder, directoryUrlPath, initializeSyncState } from "../src/services/drive-sync";
 import { getDrive } from "../src/config";
 
 type CrawlMessage =
   | { type: "init"; driveIdx: number }
-  | { type: "folder"; driveIdx: number; folderId: string; path: string; rootCrawl: boolean };
+  | { type: "folder"; driveIdx: number; folderId: string; path: string };
 
 export const maxBatchSize = 1;
 export const maxBatchTimeout = 30;
@@ -29,8 +29,7 @@ export default defineQueue<CrawlMessage>(async (batch, env) => {
         type: "folder",
         driveIdx,
         folderId: drive.rootId,
-        path: `/${driveIdx}/`,
-        rootCrawl: true,
+        path: directoryUrlPath(driveIdx, []),
       });
 
       msg.ack();
@@ -45,7 +44,6 @@ export default defineQueue<CrawlMessage>(async (batch, env) => {
           driveIdx,
           folderId: sub.id,
           path: sub.path,
-          rootCrawl: false,
         });
       }
 

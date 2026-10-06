@@ -15,6 +15,13 @@
       "when": 1788090057506,
       "tag": "20260830114057_heavy_elektra",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791315377677,
+      "tag": "20261006193617_tricky_boomer",
+      "breakpoints": true
     }
   ]
 }

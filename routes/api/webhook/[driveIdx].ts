@@ -1,5 +1,5 @@
 import { defineHandler } from "void";
-import { runIncrementalSync } from "../../../src/services/drive-sync";
+import { syncDrive } from "../../../src/services/drive-sync";
 
 // This endpoint receives Drive Changes notifications after manual watch registration.
 export const POST = defineHandler(async (c) => {
@@ -11,7 +11,7 @@ export const POST = defineHandler(async (c) => {
   const driveIdx = Number(c.req.param("driveIdx"));
   if (isNaN(driveIdx)) return c.body(null, 400);
 
-  c.executionCtx.waitUntil(runIncrementalSync(driveIdx, c.env));
+  c.executionCtx.waitUntil(syncDrive(driveIdx, c.env));
 
   return c.body(null, 200);
 });

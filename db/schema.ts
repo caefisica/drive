@@ -22,6 +22,7 @@ export const syncState = sqliteTable("sync_state", {
   driveIdx: integer("drive_idx").primaryKey(),
   pageToken: text("page_token"),
   lastSyncedAt: integer("last_synced_at"),
+  crawlRequestedAt: integer("crawl_requested_at"),
   status: text("status")
     .$type<"idle" | "crawling" | "syncing" | "error">()
     .notNull()

@@ -1,0 +1,1 @@
+ALTER TABLE `sync_state` ADD `crawl_requested_at` integer;
