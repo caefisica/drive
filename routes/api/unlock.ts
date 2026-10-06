@@ -1,10 +1,6 @@
 import { defineHandler } from "void";
-import {
-  verifyPassword,
-  signUnlockCookie,
-  verifyUnlockCookie,
-  type UnlockEntry,
-} from "../../src/services/crypto";
+import { verifyPassword, signUnlockCookie, type UnlockEntry } from "../../src/services/crypto";
+import { getUnlockedFolders, passwordKey } from "../../src/services/folder-access";
 
 export const POST = defineHandler(async (c) => {
   const body = (await c.req.json()) as { driveIdx?: number; folderId?: string; password?: string };
@@ -15,7 +11,7 @@ export const POST = defineHandler(async (c) => {
 
   const { driveIdx, folderId, password } = body;
 
-  const hash = await c.env.KV.get(`passwd:${driveIdx}:${folderId}`);
+  const hash = await c.env.KV.get(passwordKey(driveIdx, folderId));
   if (!hash) {
     return c.json({ error: "no password set for this folder" }, 404);
   }
@@ -25,13 +21,7 @@ export const POST = defineHandler(async (c) => {
     return c.json({ error: "incorrect password" }, 401);
   }
 
-  const existing = await (async () => {
-    const cookie = c.req.header("cookie") ?? "";
-    const match = /(?:^|;\s*)drive_unlock=([^;]+)/.exec(cookie);
-    if (!match) return [] as UnlockEntry[];
-    const parsed = await verifyUnlockCookie(decodeURIComponent(match[1]), c.env.UNLOCK_SECRET);
-    return parsed?.u ?? [];
-  })();
+  const existing = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
 
   const already = existing.some((u) => u.d === driveIdx && u.f === folderId);
   const entries: UnlockEntry[] = already ? existing : [...existing, { d: driveIdx, f: folderId }];

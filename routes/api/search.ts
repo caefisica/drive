@@ -1,9 +1,10 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import { defineHandler } from "void";
 import { db } from "void/db";
 
 import { driveItems } from "../../db/schema";
 import { getDrives } from "../../src/config";
+import { getUnlockedFolders, listClosedFolders } from "../../src/services/folder-access";
 
 export const GET = defineHandler(async (c) => {
   const q = c.req.query("q")?.trim() ?? "";
@@ -27,12 +28,46 @@ export const GET = defineHandler(async (c) => {
   const pattern = `%${escapeLike(q)}%`;
   const matchesName = sql`${driveItems.name} like ${pattern} escape '\\'`;
 
+  // Hide descendants of locked folders unless the unlock cookie names each locked ancestor.
+  const unlocked = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
+  const closed = await listClosedFolders(
+    driveIdx === undefined ? drives.map((d) => d.idx) : [driveIdx],
+    unlocked,
+    c.env,
+  );
+  const closedDrives = closed.filter(({ d, f }) => f === drives[d]?.rootId).map(({ d }) => d);
+
+  const filters = [matchesName];
+
+  if (driveIdx !== undefined) {
+    filters.push(eq(driveItems.driveIdx, driveIdx));
+  }
+
+  if (closedDrives.length > 0) {
+    filters.push(notInArray(driveItems.driveIdx, closedDrives));
+  }
+
+  if (closed.length > 0) {
+    // Match folder IDs within their drive because IDs are not globally unique.
+    filters.push(sql`${driveItems.id} not in (
+      with recursive hidden(id, drive_idx) as (
+        select i.id, i.drive_idx
+        from drive_items i, json_each(${JSON.stringify(closed)}) j
+        where i.drive_idx = json_extract(j.value, '$.d')
+          and i.parent_id = json_extract(j.value, '$.f')
+        union all
+        select c.id, c.drive_idx
+        from drive_items c
+        join hidden h on c.parent_id = h.id and c.drive_idx = h.drive_idx
+      )
+      select id from hidden
+    )`);
+  }
+
   const results = await db
     .select()
     .from(driveItems)
-    .where(
-      driveIdx === undefined ? matchesName : and(matchesName, eq(driveItems.driveIdx, driveIdx)),
-    )
+    .where(and(...filters))
     .limit(50);
 
   const rows = results

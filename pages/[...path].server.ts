@@ -1,5 +1,5 @@
 import { defineHandler } from "void";
-import type { InferProps, CloudEnv } from "void";
+import type { InferProps } from "void";
 import MarkdownIt from "markdown-it";
 import { codeToHtml } from "shiki";
 
@@ -13,8 +13,9 @@ import {
   resolvePath,
   WORKSPACE_EXTENSION,
 } from "../src/integrations/google-drive";
-import { signStreamToken, verifyUnlockCookie, type UnlockEntry } from "../src/services/crypto";
-import { backfillD1Items } from "../src/services/drive-sync";
+import { signStreamToken } from "../src/services/crypto";
+import { backfillD1Items, directoryUrlPath } from "../src/services/drive-sync";
+import { checkFolderPassword, getUnlockedFolders } from "../src/services/folder-access";
 
 export type Props = InferProps<typeof loader>;
 
@@ -45,50 +46,6 @@ function parsePath(
   const isDirectory = raw.endsWith("/") || segments.length === 0;
 
   return { driveIdx, segments, isDirectory };
-}
-
-async function getUnlockedFolders(
-  c: { req: { header: (key: string) => string | undefined } },
-  secret: string,
-): Promise<UnlockEntry[]> {
-  const cookie = c.req.header("cookie") ?? "";
-  const match = /(?:^|;\s*)drive_unlock=([^;]+)/.exec(cookie);
-
-  if (!match) {
-    return [];
-  }
-
-  const parsed = await verifyUnlockCookie(decodeURIComponent(match[1]), secret);
-
-  return parsed?.u ?? [];
-}
-
-async function checkFolderPassword(
-  driveIdx: number,
-  ancestorIds: string[],
-  unlockedFolders: UnlockEntry[],
-  env: CloudEnv["Bindings"],
-): Promise<{ locked: true; folderId: string } | null> {
-  const hashes = await Promise.all(
-    ancestorIds.map((folderId) => env.KV.get(`passwd:${driveIdx}:${folderId}`)),
-  );
-
-  for (let i = 0; i < ancestorIds.length; i++) {
-    if (!hashes[i]) {
-      continue;
-    }
-
-    const folderId = ancestorIds[i];
-    const isUnlocked = unlockedFolders.some(
-      (entry) => entry.d === driveIdx && entry.f === folderId,
-    );
-
-    if (!isUnlocked) {
-      return { locked: true, folderId };
-    }
-  }
-
-  return null;
 }
 
 function extToLang(filename: string): string {
@@ -153,7 +110,7 @@ export const loader = defineHandler(async (c) => {
   }
 
   const { ids, finalId } = resolved;
-  const unlockedFolders = await getUnlockedFolders(c, c.env.UNLOCK_SECRET);
+  const unlockedFolders = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
   const locked = await checkFolderPassword(driveIdx, ids, unlockedFolders, c.env);
 
   if (locked) {
@@ -177,15 +134,7 @@ export const loader = defineHandler(async (c) => {
 
     // Persist crawl results without delaying the directory response.
     c.executionCtx.waitUntil(
-      backfillD1Items(
-        driveIdx,
-        finalId,
-        result.files.map((file) => ({
-          ...file,
-          urlPath: `/${driveIdx}/${segments.join("/")}/${file.name}`,
-        })),
-        c.env,
-      ),
+      backfillD1Items(driveIdx, finalId, directoryUrlPath(driveIdx, segments), result.files, c.env),
     );
 
     return {
