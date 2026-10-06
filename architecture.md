@@ -1,5 +1,53 @@
 # Architecture
 
+One Cloudflare Worker, built with Void. It serves Vue pages, a small JSON and
+HTML API, a cron job and a queue consumer. Google Drive is the source of files.
+D1 holds searchable metadata. KV holds caches and folder password hashes.
+
+```text
+browser ── pages/ ─────────────┐
+        ── routes/api/* ───────┤
+                               ├── src/integrations/google-drive.ts ── Google Drive
+cron ── crons/sync.ts ─────────┤
+Drive ── routes/api/webhook ───┤── src/services/drive-sync.ts ── D1
+queue ── queues/crawl.ts ──────┘
+```
+
+## Code map
+
+| Path                                  | Responsibility                                                                                                                           |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `env.ts`, `src/bindings.d.ts`         | The four environment variables and their types.                                                                                          |
+| `src/config.ts`                       | Parses `DRIVES` into `DriveConfig`. A drive's index is its position.                                                                     |
+| `src/integrations/google-drive.ts`    | Every Google API call: tokens, listing, path lookup, changes, file kinds. KV caches sit here.                                            |
+| `src/services/crypto.ts`              | HMAC signing of stream tokens and unlock cookies, PBKDF2 passwords.                                                                      |
+| `src/services/folder-access.ts`       | The `passwd:` key, the unlock cookie, and the lock checks shared by the page loader, `/api/unlock` and search.                           |
+| `src/services/drive-sync.ts`          | Writes `drive_items` and `sync_state`: `syncDrive`, incremental sync, folder crawl, browse backfill.                                     |
+| `db/schema.ts`, `db/migrations/`      | The D1 schema and its migrations.                                                                                                        |
+| `pages/index.*`, `pages/[...path].*`  | Home and every `/<drive>/<path>` URL. The `.server.ts` loader resolves the path, checks passwords, and returns a directory or file view. |
+| `pages/layout.vue`, `src/components/` | Page chrome, search box, and the viewers.                                                                                                |
+| `routes/api/stream/[fileId].ts`       | Proxies file bytes from Drive, forwarding `Range`.                                                                                       |
+| `routes/api/export/[fileId].ts`       | Exports a Google Docs, Sheets, Slides or Drawing file.                                                                                   |
+| `routes/api/search.ts`                | Name search over `drive_items`, minus folders the visitor has not unlocked.                                                              |
+| `routes/api/unlock.ts`                | Verifies a folder password and sets the unlock cookie.                                                                                   |
+| `routes/api/webhook/[driveIdx].ts`    | Receives Drive change notifications and calls `syncDrive`.                                                                               |
+| `crons/sync.ts`                       | Calls `syncDrive` for every drive every 15 minutes.                                                                                      |
+| `queues/crawl.ts`                     | Full crawl of a drive, one folder per message.                                                                                           |
+| `scripts/set-password.ts`             | Offline helper that hashes a folder password.                                                                                            |
+
+## Viewing a path
+
+`pages/[...path].server.ts` splits the URL into a drive index and folder names,
+then walks the names to Drive folder IDs with `resolvePath`. It looks up
+`passwd:<drive>:<folder>` in KV for every folder on the walk. If one has a hash
+and the `drive_unlock` cookie does not cover it, it returns the password form.
+Otherwise it lists a folder, or reads a file's metadata and signs a stream
+token.
+
+File bytes reach the browser through `/api/stream/<fileId>?d=<drive>&t=<token>`,
+which verifies the token and fetches the bytes with the drive's access token.
+Access tokens are cached in KV.
+
 ## Indexing
 
 Each configured drive has one `sync_state` row. A drive is indexed in two
@@ -47,3 +95,19 @@ overlapping ticks and webhooks queue one `init`. An init that has not stored a
 page token within the hour, because it failed or its message was lost, is queued
 again. If the queue send itself fails, the claim is released and the next tick
 retries.
+
+Opening a folder in `pages/[...path].server.ts` also calls `backfillD1Items`,
+which inserts rows the index does not have yet. [Sync](docs/sync.md) covers the
+behavior of each path.
+
+## Boundaries
+
+- Token refresh, listing, path lookup and the change feed live in
+  `src/integrations/google-drive.ts`. The stream and export routes and the page
+  loader's text preview fetch file content from Drive themselves, with a token
+  from `getAccessToken`.
+- Only `src/services/drive-sync.ts` writes `drive_items`. `routes/api/search.ts`
+  only reads it.
+- Signing, verifying and password hashing live in `src/services/crypto.ts`.
+- D1 batches stay under D1's 100 bound parameters per statement: `drive-sync.ts`
+  splits multi-row inserts by column count.
