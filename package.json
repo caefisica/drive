@@ -7,7 +7,6 @@
     "check": "vp check",
     "db:migrate": "vp exec void db migrate",
     "db:migrate:remote": "vp exec void db migrate --remote",
-    "release:db": "vp exec void db migrate --remote",
     "release:app": "vp exec void deploy",
     "postinstall": "vp config"
   },
@@ -17,20 +16,20 @@
     "@unocss/preset-wind4": "^66.9.2",
     "@unocss/transformer-directives": "^66.9.2",
     "@unocss/transformer-variant-group": "^66.9.2",
-    "@void/vue": "^0.10.13",
-    "drizzle-orm": "^0.45.2",
+    "@void/vue": "^0.26.0",
+    "drizzle-orm": "^0.45.3",
     "markdown-it": "^15.0.1",
     "shiki": "^4.4.3",
     "unocss": "^66.9.2",
     "vite-plus": "^0.3.0",
-    "void": "^0.10.13",
+    "void": "^0.26.0",
     "vue": "^3.5.42"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.129",
     "@types/markdown-it": "^14.2.0",
     "typescript": "^7.0.2",
-    "wrangler": "^4.129.0"
+    "wrangler": "^4.148.0"
   },
   "packageManager": "bun@1.4.0"
 }
