@@ -138,7 +138,7 @@ export async function storePassword(options: StorePasswordOptions): Promise<Stor
 // The local KV that `vp dev` serves lives under <persist directory>/v3.
 async function putLocal(key: string, hash: string, persistDir: string) {
   const proxy = await getPlatformProxy({
-    configPath: join(projectRoot, "wrangler.jsonc"),
+    configPath: join(projectRoot, "scripts/wrangler.jsonc"),
     persist: { path: join(persistDir, "v3") },
   });
 
