@@ -10,6 +10,7 @@ export const driveItems = sqliteTable(
     mimeType: text("mime_type").notNull(),
     size: integer("size"),
     modifiedTime: integer("modified_time"),
+    feedSeq: integer("feed_seq"),
   },
   (t) => [index("idx_di_siblings").on(t.driveIdx, t.parentId, t.name)],
 );
@@ -19,6 +20,7 @@ export const syncState = sqliteTable("sync_state", {
   pageToken: text("page_token"),
   lastSyncedAt: integer("last_synced_at"),
   crawlRequestedAt: integer("crawl_requested_at"),
+  feedSeq: integer("feed_seq").notNull().default(0),
   status: text("status")
     .$type<"idle" | "crawling" | "syncing" | "error">()
     .notNull()

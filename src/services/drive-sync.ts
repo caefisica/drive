@@ -54,11 +54,23 @@ function incoming(column: SQLiteColumn) {
   return sql.raw(`excluded."${column.name}"`);
 }
 
-// An upsert replaces a row only with data at least as new as the row's. A listing read earlier
-// than a change the feed already applied therefore cannot undo that change.
-const notOlderThanStored = sql`${driveItems.modifiedTime} is null
-  or ${incoming(driveItems.modifiedTime)} is null
-  or ${incoming(driveItems.modifiedTime)} >= ${driveItems.modifiedTime}`;
+// Drive keeps no version that a move bumps, so the order of writes is local. Every batch of the
+// change feed takes the next number of its drive's counter and stamps the rows it writes with it.
+// A crawl reads the counter before it lists, so it may replace a row only if the feed stamped the
+// row no later than that read. A listing read before a change therefore cannot undo it, however
+// late it is written, and the feed always replaces. A move needs no modified time to win.
+function feedSeqOf(driveIdx: number) {
+  return sql<number>`(select ${syncState.feedSeq} from ${syncState} where ${syncState.driveIdx} = ${driveIdx})`;
+}
+
+async function readFeedSeq(db: ReturnType<typeof makeDb>, driveIdx: number): Promise<number> {
+  const [state] = await db
+    .select({ feedSeq: syncState.feedSeq })
+    .from(syncState)
+    .where(eq(syncState.driveIdx, driveIdx));
+
+  return state?.feedSeq ?? 0;
+}
 
 // A row holds what Drive says about one file: its own name, not the name its URL uses.
 function itemRow(
@@ -167,7 +179,10 @@ export async function runIncrementalSync(
           continue;
         }
 
-        const row = itemRow(driveIdx, change.file.parents?.[0] ?? null, change.file);
+        const row = {
+          ...itemRow(driveIdx, change.file.parents?.[0] ?? null, change.file),
+          feedSeq: feedSeqOf(driveIdx),
+        };
 
         statements.push(
           db
@@ -181,8 +196,8 @@ export async function runIncrementalSync(
                 mimeType: row.mimeType,
                 size: row.size,
                 modifiedTime: row.modifiedTime,
+                feedSeq: row.feedSeq,
               },
-              setWhere: notOlderThanStored,
             }),
         );
 
@@ -190,6 +205,13 @@ export async function runIncrementalSync(
       }
 
       if (statements.length > 0) {
+        statements.unshift(
+          db
+            .update(syncState)
+            .set({ feedSeq: sql`${syncState.feedSeq} + 1` })
+            .where(eq(syncState.driveIdx, driveIdx)),
+        );
+
         await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
 
         await Promise.all(touchedIds.map((id) => invalidateKvForFile(id, driveIdx, env)));
@@ -242,7 +264,9 @@ export async function crawlFolder(
   folderIds: string[];
 }> {
   const db = makeDb(env);
-  const files = await listDirectory(driveIdx, folderId, env);
+  const feedSeq = await readFeedSeq(db, driveIdx);
+  // Read the counter before listing. A cached listing could predate that read.
+  const files = await listDirectory(driveIdx, folderId, env, { fresh: true });
 
   await insertRows(
     db,
@@ -260,7 +284,7 @@ export async function crawlFolder(
             size: incoming(driveItems.size),
             modifiedTime: incoming(driveItems.modifiedTime),
           },
-          setWhere: notOlderThanStored,
+          setWhere: sql`${driveItems.feedSeq} is null or ${driveItems.feedSeq} <= ${feedSeq}`,
         }),
   );
 

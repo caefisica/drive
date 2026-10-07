@@ -119,14 +119,15 @@ async function listAll(
 
 // Home, folder pages and the crawl list a folder only through this function, so a file has one
 // URL name everywhere. The whole folder is read at once because a name is shared only in
-// relation to every other file of the folder.
+// relation to every other file of the folder. `fresh` bypasses the cached listing.
 export async function listDirectory(
   driveIdx: number,
   folderId: string,
   env: CloudEnv["Bindings"],
+  { fresh = false }: { fresh?: boolean } = {},
 ): Promise<ListedFile[]> {
   const cacheKey = `dir:${driveIdx}:${folderId}`;
-  const cached = await env.KV.get<ListedFile[]>(cacheKey, "json");
+  const cached = fresh ? null : await env.KV.get<ListedFile[]>(cacheKey, "json");
   if (cached) return cached;
 
   const files = withUrlNames(
