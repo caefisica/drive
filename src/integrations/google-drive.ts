@@ -1,5 +1,6 @@
 import type { CloudEnv } from "void";
 import { getDrive } from "../config";
+import { parseUrlName, withUrlNames } from "../url-names";
 
 const TOKEN_BASE_URL = "https://oauth2.googleapis.com/token";
 const FILES_BASE_URL = "https://www.googleapis.com/drive/v3/files";
@@ -14,10 +15,10 @@ export type DriveFile = {
   shortcutDetails?: { targetId: string; targetMimeType: string };
 };
 
-export type DriveListResult = {
-  files: DriveFile[];
-  nextPageToken?: string;
-};
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
+
+// A file of a folder listing, with the name its URL uses.
+export type ListedFile = DriveFile & { urlName: string };
 
 export type DriveChange = {
   fileId: string;
@@ -65,63 +66,81 @@ export async function getAccessToken(driveIdx: number, env: CloudEnv["Bindings"]
   return access_token;
 }
 
+// Materialize a shortcut as its target to keep downstream handling uniform.
+function followShortcut(file: DriveFile): DriveFile {
+  if (file.mimeType !== "application/vnd.google-apps.shortcut" || !file.shortcutDetails) {
+    return file;
+  }
+
+  return {
+    ...file,
+    id: file.shortcutDetails.targetId,
+    mimeType: file.shortcutDetails.targetMimeType,
+  };
+}
+
+// Reads every page of a files.list query, so the caller sees all the files a folder holds.
+async function listAll(
+  driveIdx: number,
+  query: string,
+  fields: string,
+  env: CloudEnv["Bindings"],
+  orderBy?: string,
+): Promise<DriveFile[]> {
+  const drive = getDrive(driveIdx, env);
+  const token = await getAccessToken(driveIdx, env);
+  const files: DriveFile[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL(FILES_BASE_URL);
+    url.searchParams.set("q", query);
+    if (orderBy) url.searchParams.set("orderBy", orderBy);
+    url.searchParams.set("fields", `nextPageToken,files(${fields})`);
+    url.searchParams.set("pageSize", "1000");
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+    if (drive?.kind === "shared_drive") {
+      url.searchParams.set("corpora", "drive");
+      url.searchParams.set("driveId", drive.rootId);
+    }
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Drive list failed: ${res.status}`);
+
+    const page = (await res.json()) as { files: DriveFile[]; nextPageToken?: string };
+    files.push(...page.files.map(followShortcut));
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  return files;
+}
+
+// Home, folder pages and the crawl list a folder only through this function, so a file has one
+// URL name everywhere. The whole folder is read at once because a name is shared only in
+// relation to every other file of the folder.
 export async function listDirectory(
   driveIdx: number,
   folderId: string,
   env: CloudEnv["Bindings"],
-  pageToken?: string,
-): Promise<DriveListResult> {
-  const cacheKey = `dir:${driveIdx}:${folderId}:${pageToken ?? "first"}`;
-  const cached = await env.KV.get<DriveListResult>(cacheKey, "json");
+): Promise<ListedFile[]> {
+  const cacheKey = `dir:${driveIdx}:${folderId}`;
+  const cached = await env.KV.get<ListedFile[]>(cacheKey, "json");
   if (cached) return cached;
 
-  const drive = getDrive(driveIdx, env);
-  const token = await getAccessToken(driveIdx, env);
-  const url = new URL(FILES_BASE_URL);
-  url.searchParams.set("q", `'${folderId}' in parents and name != '.password' and trashed = false`);
-  url.searchParams.set("orderBy", "folder,name,modifiedTime desc");
-  url.searchParams.set(
-    "fields",
-    "nextPageToken,files(id,name,mimeType,size,modifiedTime,shortcutDetails)",
+  const files = withUrlNames(
+    await listAll(
+      driveIdx,
+      `'${folderId}' in parents and name != '.password' and trashed = false`,
+      "id,name,mimeType,size,modifiedTime,shortcutDetails",
+      env,
+      "folder,name,modifiedTime desc",
+    ),
   );
-  url.searchParams.set("pageSize", "100");
-  url.searchParams.set("supportsAllDrives", "true");
-  url.searchParams.set("includeItemsFromAllDrives", "true");
-  if (drive?.kind === "shared_drive") {
-    url.searchParams.set("corpora", "drive");
-    url.searchParams.set("driveId", drive.rootId);
-  }
-  if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!res.ok) throw new Error(`Drive list failed: ${res.status}`);
-
-  const data = (await res.json()) as DriveListResult;
-
-  // Materialize shortcuts as their target to keep downstream handling uniform.
-  for (const file of data.files) {
-    if (file.mimeType === "application/vnd.google-apps.shortcut" && file.shortcutDetails) {
-      file.id = file.shortcutDetails.targetId;
-      file.mimeType = file.shortcutDetails.targetMimeType;
-    }
-  }
-
-  // Keep duplicate names addressable in URLs.
-  const seenNames = new Map<string, number>();
-  for (const file of data.files) {
-    seenNames.set(file.name, (seenNames.get(file.name) ?? 0) + 1);
-  }
-  for (const file of data.files) {
-    if ((seenNames.get(file.name) ?? 0) > 1) {
-      file.name = `${file.name} (dupID: ${crc32(file.id)})`;
-    }
-  }
-
-  await env.KV.put(cacheKey, JSON.stringify(data), { expirationTtl: 300 });
-  return data;
+  await env.KV.put(cacheKey, JSON.stringify(files), { expirationTtl: 300 });
+  return files;
 }
 
 export async function getFileMetadata(
@@ -143,54 +162,32 @@ export async function getFileMetadata(
   return file;
 }
 
-const DUP_RE = /\s+\(dupID:\s*(\d+)\)$/;
-
+// Finds the file a URL segment names, by the rule `urlName` applies to a listing. A plain segment
+// names a file only when no sibling shares its name, and a suffixed one names the file whose ID
+// it carries. The answer is never cached: it depends on the siblings the folder holds now.
 export async function resolveSegment(
   driveIdx: number,
   parentId: string,
   segment: string,
   env: CloudEnv["Bindings"],
 ): Promise<string | null> {
-  const cacheKey = `path:${driveIdx}:${parentId}:${encodeURIComponent(segment)}`;
-  const cached = await env.KV.get(cacheKey);
-  if (cached) return cached;
-
-  const dupMatch = DUP_RE.exec(segment);
-  const rawName = dupMatch ? segment.slice(0, segment.lastIndexOf(" (dupID:")) : segment;
-  const targetCrc = dupMatch ? Number(dupMatch[1]) : null;
-
-  const drive = getDrive(driveIdx, env);
-  const token = await getAccessToken(driveIdx, env);
-  const url = new URL(FILES_BASE_URL);
-  url.searchParams.set(
-    "q",
-    `'${parentId}' in parents and name = '${rawName.replace(/'/g, "\\'")}' and trashed = false`,
+  const { name, id } = parseUrlName(segment);
+  const quoted = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const found = await listAll(
+    driveIdx,
+    `'${parentId}' in parents and name = '${quoted}' and trashed = false`,
+    "id,name,mimeType,shortcutDetails",
+    env,
   );
-  url.searchParams.set("fields", "files(id,mimeType,shortcutDetails)");
-  url.searchParams.set("pageSize", "10");
-  url.searchParams.set("supportsAllDrives", "true");
-  url.searchParams.set("includeItemsFromAllDrives", "true");
-  if (drive?.kind === "shared_drive") {
-    url.searchParams.set("corpora", "drive");
-    url.searchParams.set("driveId", drive.rootId);
-  }
+  const siblings = found.filter((file) => file.name === name);
+  const file =
+    id === null
+      ? siblings.length === 1
+        ? siblings[0]
+        : undefined
+      : siblings.find((f) => f.id === id);
 
-  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return null;
-
-  const { files } = (await res.json()) as { files: DriveFile[] };
-  if (!files.length) return null;
-
-  let file = files[0];
-  if (targetCrc !== null) {
-    file = files.find((f) => crc32(f.id) === targetCrc) ?? files[0];
-  }
-  if (file.mimeType === "application/vnd.google-apps.shortcut" && file.shortcutDetails) {
-    file.id = file.shortcutDetails.targetId;
-  }
-
-  await env.KV.put(cacheKey, file.id, { expirationTtl: 86_400 });
-  return file.id;
+  return file?.id ?? null;
 }
 
 export async function resolvePath(
@@ -212,6 +209,29 @@ export async function resolvePath(
   }
 
   return { ids, finalId: currentId };
+}
+
+// Use the real My Drive root ID because rows and change feeds match that ID, not the `root` alias.
+export async function resolveFolderId(
+  driveIdx: number,
+  folderId: string,
+  env: CloudEnv["Bindings"],
+): Promise<string> {
+  if (folderId !== "root") return folderId;
+
+  const cacheKey = `rootid:${driveIdx}`;
+  const cached = await env.KV.get(cacheKey);
+  if (cached) return cached;
+
+  const token = await getAccessToken(driveIdx, env);
+  const res = await fetch(`${FILES_BASE_URL}/root?fields=id`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Root folder lookup failed: ${res.status}`);
+
+  const { id } = (await res.json()) as { id: string };
+  await env.KV.put(cacheKey, id);
+  return id;
 }
 
 export async function getStartPageToken(
@@ -288,7 +308,7 @@ export type FileKind =
   | "other";
 
 export function getFileKind(mimeType: string): FileKind {
-  if (mimeType === "application/vnd.google-apps.folder") return "folder";
+  if (mimeType === FOLDER_MIME) return "folder";
   if (mimeType.startsWith("video/")) return "video";
   if (mimeType.startsWith("audio/")) return "audio";
   if (mimeType.startsWith("image/")) return "image";
@@ -312,22 +332,4 @@ export function getFileKind(mimeType: string): FileKind {
   )
     return "archive";
   return "other";
-}
-
-const CRC32_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[i] = c;
-  }
-  return table;
-})();
-
-function crc32(str: string): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < str.length; i++) {
-    crc = CRC32_TABLE[(crc ^ str.charCodeAt(i)) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
 }
