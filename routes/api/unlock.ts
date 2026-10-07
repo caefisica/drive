@@ -1,11 +1,22 @@
 import { defineHandler } from "void";
+import { isDriveIdx } from "../../src/config";
 import { verifyPassword, signUnlockCookie, type UnlockEntry } from "../../src/services/crypto";
 import { getUnlockedFolders, passwordKey } from "../../src/services/folder-access";
 
 export const POST = defineHandler(async (c) => {
-  const body = (await c.req.json()) as { driveIdx?: number; folderId?: string; password?: string };
+  const body = (await c.req.json().catch(() => null)) as {
+    driveIdx?: unknown;
+    folderId?: unknown;
+    password?: unknown;
+  } | null;
 
-  if (typeof body.driveIdx !== "number" || !body.folderId || !body.password) {
+  if (
+    !isDriveIdx(body?.driveIdx) ||
+    typeof body.folderId !== "string" ||
+    !body.folderId ||
+    typeof body.password !== "string" ||
+    !body.password
+  ) {
     return c.json({ error: "invalid request" }, 400);
   }
 

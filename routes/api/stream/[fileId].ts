@@ -1,11 +1,13 @@
 import { defineHandler } from "void";
+import { parseDriveIdx } from "../../../src/config";
 import { getAccessToken } from "../../../src/integrations/google-drive";
 import { verifyStreamToken } from "../../../src/services/crypto";
 
 export const GET = defineHandler(async (c) => {
   const fileId = c.req.param("fileId");
   if (!fileId) return c.json({ error: "not found" }, 404);
-  const driveIdx = parseInt(c.req.query("d") ?? "0", 10);
+  const driveIdx = parseDriveIdx(c.req.query("d"));
+  if (driveIdx === null) return c.json({ error: "d must be a non-negative integer" }, 400);
   const token = c.req.query("t") ?? "";
 
   if (!(await verifyStreamToken(token, fileId, driveIdx, c.env.STREAM_SECRET))) {
