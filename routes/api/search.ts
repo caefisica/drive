@@ -65,7 +65,8 @@ export const GET = defineHandler(async (c) => {
     )`);
   }
 
-  const results = await drizzle(c.env.DB)
+  const db = drizzle(c.env.DB);
+  const results = await db
     .select()
     .from(driveItems)
     .where(and(...filters))
