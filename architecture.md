@@ -21,7 +21,7 @@ queue ── queues/crawl.ts ──────┘
 | `src/config.ts`                       | Parses `DRIVES` into `DriveConfig`. A drive's index is its position.                                                                     |
 | `src/integrations/google-drive.ts`    | Every Google API call: tokens, listing, path lookup, changes, file kinds. [KV keys](#kv-keys) sit here.                                  |
 | `src/url-names.ts`                    | The one rule that turns a file's name into its URL name, and back. [URL names](#url-names) describes it.                                 |
-| `src/services/item-urls.ts`           | Derives the URL of indexed files from their chain of parents, for search.                                                                |
+| `src/services/item-urls.ts`           | Derives the URL of indexed files from their chain of parents, for search, with every segment named by ID.                                |
 | `src/test-support/fake-drive.ts`      | An in-memory Google Drive for tests: listing, lookup and the change feed, with renames, moves and request delays.                        |
 | `src/services/crypto.ts`              | HMAC signing of stream tokens and unlock cookies, PBKDF2 passwords.                                                                      |
 | `src/services/folder-access.ts`       | The `passwd:` key, the unlock cookie, and the lock checks shared by the page loader, `/api/unlock` and search.                           |
@@ -74,8 +74,12 @@ shared depends on every other file of the folder. The home page, folder pages
 and the crawl all list through it. `resolveSegment` is the lookup for the same
 rule. Search derives each result's link with `itemUrls`, which reads the chain
 of parents from `drive_items` up to the drive's root, resolved to the real ID
-with `resolveFolderId`, and applies the same rule. A file whose chain does not
-reach the root, because a folder on the way is not indexed, links to the drive.
+with `resolveFolderId`. Whether a name is shared depends on every file of its
+folder, and the index may lack a twin that Drive holds, so search cannot apply
+the sharing rule. It writes every segment of a link in the suffixed form, which
+`resolveSegment` resolves by ID whatever the siblings are. A file whose chain
+does not reach the root, because a folder on the way is not indexed, links to
+the drive.
 
 ### What the index stores
 
@@ -92,12 +96,18 @@ file, takes nothing from any other row, and computes no URL. Whichever order
 they interleave in, no two files get the same URL name and no file gets another
 file's URL.
 
-Upserts from the crawl and the change feed replace a row only with data whose
-modified time is not older than the row's, so a listing read before a change
-cannot undo it. A listing and a change that carry the same modified time, such
-as a move, are applied in arrival order. The change feed repairs a row left
-behind that way: the next change to the file carries a modified time at least as
-new, so it always applies.
+The change feed always replaces the row it writes. Drive has no version that a
+move bumps, and a move leaves the modified time as it was, so the order of
+writes is kept locally. Each batch of the feed takes the next number of its
+drive's `sync_state.feed_seq` and stamps the rows it writes with it
+(`drive_items.feed_seq`). A crawl reads `feed_seq` before it lists the folder,
+and its upsert replaces a row only if the row's stamp is null or no greater than
+that number. A listing read before a change therefore cannot undo it, however
+late the crawl writes it, and a move wins without comparing times. A listing
+that a row refused is not lost: any change newer than it is still ahead in the
+feed, which is read from a token taken before the crawl. The crawl lists with
+`fresh`, because a cached listing may predate the read of `feed_seq`. The
+backfill only inserts, so it never replaces a row.
 
 One single-row case has no owner that repairs it. A listing read before a file
 was removed can recreate the row after the feed deleted it, because nothing
@@ -125,6 +135,7 @@ the crawl `init` message that starts the initial crawl.
 | `page_token`         | Cursor into the change feed. Null until an init has run.           |
 | `last_synced_at`     | When the page token was last stored.                               |
 | `crawl_requested_at` | When `init` was queued. Cleared when the init stores a page token. |
+| `feed_seq`           | Counts the change-feed batches written. See the concurrency rule.  |
 | `status`             | One of the values below.                                           |
 
 ### Statuses
