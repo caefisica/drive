@@ -18,8 +18,7 @@ audio seek. Search finds files by name across all drives.
 
 ```sh
 bun install
-cp .env.example .env.local   # fill in DRIVES and the two secrets
-vp dev
+vp dev                       # needs .env with DRIVES and the two secrets
 ```
 
 `vp` is Vite+; `mise install` provides the version pinned in

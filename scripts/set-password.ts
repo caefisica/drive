@@ -2,8 +2,8 @@
  * Set a password for a drive root or specific folder.
  *
  * Usage (local):
- *   bun --env-file=.env.local scripts/set-password.ts --drive 0 --password secret123
- *   bun --env-file=.env.local scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123
+ *   bun scripts/set-password.ts --drive 0 --password secret123
+ *   bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123
  *
  * This stores a PBKDF2 hash in KV under `passwd:{driveIdx}:{folderId}`.
  * Without --folder-id the password locks the drive root, whose id is the drive's

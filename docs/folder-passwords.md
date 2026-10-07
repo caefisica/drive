@@ -7,8 +7,8 @@ unlocks that folder for 24 hours.
 ## Set a password
 
 [scripts/set-password.ts](../scripts/set-password.ts) hashes a password with
-PBKDF2 and prints the KV entry to store. It reads `DRIVES` from `.env.local`,
-which Bun loads, and exits when the drive is not in it:
+PBKDF2 and prints the KV entry to store. It reads `DRIVES` from `.env`, which
+Bun loads, and exits when the drive is not in it:
 
 ```sh
 bun scripts/set-password.ts --drive 0 --password secret123

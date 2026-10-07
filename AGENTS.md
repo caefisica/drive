@@ -8,6 +8,6 @@ Code map: [architecture.md](architecture.md). Workflows:
 - Package manager is bun. Do not add another lockfile.
 - A schema change in `db/schema.ts` ships with a migration from
   `vp exec void db generate`.
-- Never commit `.env.local` or real Google credentials.
+- Never commit `.env` or real Google credentials.
 - Format Markdown with
   `bunx prettier --print-width 80 --prose-wrap always --write '**/*.md'`.

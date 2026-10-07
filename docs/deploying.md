@@ -1,34 +1,51 @@
 # Deploying
 
-The app deploys with the Void CLI, which [package.json](../package.json) wraps
-in two scripts:
+The app deploys to your own Cloudflare account with the Void CLI, which
+[package.json](../package.json) wraps in one script:
 
-| Script                | Runs                       | Does                                  |
-| --------------------- | -------------------------- | ------------------------------------- |
-| `bun run release:db`  | `void db migrate --remote` | Applies `db/migrations` to remote D1. |
-| `bun run release:app` | `void deploy`              | Builds and deploys the Worker.        |
+| Script                | Runs          | Does                                                                       |
+| --------------------- | ------------- | -------------------------------------------------------------------------- |
+| `bun run release:app` | `void deploy` | Builds, creates missing resources, applies migrations, deploys the Worker. |
 
-Run `release:db` first. A change to [db/schema.ts](../db/schema.ts) needs a new
-migration from `vp exec void db generate` before it.
+A change to [db/schema.ts](../db/schema.ts) needs a new migration from
+`vp exec void db generate` before the deploy.
 
 ## First deploy
 
-1. Sign in and link the directory to a Void project with
-   `vp exec void auth login` and `vp exec void project link`.
-2. Upload the production variables. `DRIVES` holds OAuth credentials, so treat
-   it as a secret:
+1. Choose Cloudflare as the destination and sign in. A browser window opens:
 
    ```sh
-   vp exec void secret sync .env.local
+   vp exec void connect --platform cloudflare
    ```
 
-   See [Configuration](configuration.md) for what each variable holds.
+2. Set the production secrets. `DRIVES` holds OAuth credentials, so it is a
+   secret like the rest. Each command reads the value from stdin:
 
-3. Run `bun run release:db`, then `bun run release:app`.
+   ```sh
+   vp exec void secret put DRIVES
+   vp exec void secret put STREAM_SECRET
+   vp exec void secret put UNLOCK_SECRET
+   vp exec void secret put WEBHOOK_SECRET   # optional
+   ```
+
+   See [Configuration](configuration.md) for what each variable holds. Void
+   never uploads the local `.env`. The first `void deploy` stops and lists the
+   required secrets that are still unset, so you can also run it first.
+
+3. Run `bun run release:app`, then commit the `void.lock.json` it writes. The
+   app is served at `https://drive.<your workers.dev subdomain>.workers.dev`.
+
+In CI, or any shell without a browser, set `CLOUDFLARE_API_TOKEN` (and
+`CLOUDFLARE_ACCOUNT_ID`) instead of running `void connect`, and write
+`{ "platform": "cloudflare" }` to `.void/project.json` so `void secret` targets
+Cloudflare. If a deploy stops with "no preview URL", set
+`CLOUDFLARE_WORKERS_SUBDOMAIN` to your account's workers.dev subdomain and rerun
+it.
 
 `void deploy` registers the cron job in [crons/sync.ts](../crons/sync.ts) and
-the `crawl` queue in [queues/crawl.ts](../queues/crawl.ts), and provisions the
-D1 and KV bindings that [void.json](../void.json) infers.
+the `crawl` queue in [queues/crawl.ts](../queues/crawl.ts), and creates the D1
+database and KV namespace that [void.config.ts](../void.config.ts) infers. It
+records their IDs in `void.lock.json`.
 
 The first cron tick after the deploy starts indexing each drive; see
 [Sync](sync.md). Optionally [register the webhook](sync.md#webhook).

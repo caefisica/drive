@@ -1,8 +1,8 @@
 # Configuration
 
 The app reads four variables, declared in [env.ts](../env.ts). For local
-development put them in `.env.local`; [.env.example](../.env.example) is a
-template. For production see [Deploying](deploying.md).
+development put them in `.env`, the only dotenv file Void reads. For production
+see [Deploying](deploying.md).
 
 | Variable         | Required | Purpose                                           |
 | ---------------- | -------- | ------------------------------------------------- |
@@ -11,7 +11,14 @@ template. For production see [Deploying](deploying.md).
 | `UNLOCK_SECRET`  | yes      | HMAC key for the folder-unlock cookie. 24 h.      |
 | `WEBHOOK_SECRET` | no       | Token Google sends to `/api/webhook/<index>`.     |
 
-Generate each secret with `openssl rand -base64 32`.
+Generate each secret with `openssl rand -base64 32`. A `.env` looks like this:
+
+```sh
+DRIVES='[{"name":"My Drive","kind":"my_drive","rootId":"root","clientId":"…","clientSecret":"…","refreshToken":"…"}]'
+STREAM_SECRET=<openssl rand -base64 32>
+UNLOCK_SECRET=<openssl rand -base64 32>
+# WEBHOOK_SECRET=<openssl rand -base64 32>
+```
 
 ## DRIVES
 

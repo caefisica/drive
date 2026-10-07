@@ -5,13 +5,12 @@
 ```sh
 mise install          # installs the vp version pinned in mise.toml
 bun install           # also runs `vp config`, which installs the git hook
-cp .env.example .env.local
 vp dev
 ```
 
-`.env.local` needs `DRIVES`, `STREAM_SECRET` and `UNLOCK_SECRET`; see
-[Configuration](configuration.md). `vp dev` applies the D1 migrations to a local
-database and serves on the port it prints.
+`.env` needs `DRIVES`, `STREAM_SECRET` and `UNLOCK_SECRET`. Void reads no other
+dotenv file. See [Configuration](configuration.md). `vp dev` applies the D1
+migrations to a local database and serves on the port it prints.
 
 ## Layout
 
