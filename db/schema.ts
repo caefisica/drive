@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const driveItems = sqliteTable(
   "drive_items",
@@ -10,12 +10,8 @@ export const driveItems = sqliteTable(
     mimeType: text("mime_type").notNull(),
     size: integer("size"),
     modifiedTime: integer("modified_time"),
-    urlPath: text("url_path"),
   },
-  (t) => [
-    index("idx_di_parent").on(t.driveIdx, t.parentId),
-    uniqueIndex("uq_di_path").on(t.driveIdx, t.urlPath),
-  ],
+  (t) => [index("idx_di_siblings").on(t.driveIdx, t.parentId, t.name)],
 );
 
 export const syncState = sqliteTable("sync_state", {
