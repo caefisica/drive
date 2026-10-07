@@ -1,6 +1,5 @@
-// A URL names every file by its name in its folder. Drive allows many files of one name in a
-// folder, so a name that is not unique carries its file ID. Nothing is stored: a URL is computed
-// from the names on the way to the file, with these functions, wherever a URL is needed.
+// Drive allows many files of one name in a folder, so a non-unique name carries its file ID.
+// Nothing is stored. These functions compute URLs from the names on the way to the file.
 const SUFFIX = /^([\s\S]*) \(dupID: ([^)]+)\)$/;
 
 // A name that already looks like a suffixed one is suffixed too. Every URL that ends in a suffix
@@ -32,7 +31,6 @@ export function parseUrlName(segment: string): { name: string; id: string | null
   return match ? { name: match[1], id: match[2] } : { name: segment, id: null };
 }
 
-// Folder paths end in a slash.
 export function urlPath(driveIdx: number, urlNames: string[], isFolder: boolean): string {
   const segments = [String(driveIdx), ...urlNames.map(encodeURIComponent)];
 

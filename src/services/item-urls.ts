@@ -30,11 +30,9 @@ function sharesName(alias: string) {
   )`);
 }
 
-// The URL of each indexed file, keyed by file ID. Rows hold only each file's own name and parent,
-// so the URL is derived from the files on the way up to the drive root and follows every rename
-// and move at once. A file whose chain does not reach the drive's root, because a folder on the
-// way is not indexed yet or lies outside the drive, or whose drive's root ID cannot be resolved
-// now, links to the drive itself.
+// Derive each indexed file's URL from its own name and parent and the files on the way to the
+// drive root. A file whose chain does not reach the root, or whose root ID cannot be resolved,
+// links to the drive itself.
 export async function itemUrls(
   db: Pick<DrizzleD1Database, "all">,
   files: Array<{ id: string; driveIdx: number }>,
