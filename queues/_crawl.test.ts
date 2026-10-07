@@ -146,9 +146,9 @@ describe.each(cases)("crawl of $name", ({ config, root }) => {
     const urls = await itemUrls(drizzle(env.DB), rows, env as never);
 
     expect(Object.fromEntries(urls)).toEqual({
-      docs: "/0/docs/",
-      top: "/0/top.txt",
-      later: "/0/later.txt",
+      docs: "/0/docs%20(dupID%3A%20docs)/",
+      top: "/0/top.txt%20(dupID%3A%20top)",
+      later: "/0/later.txt%20(dupID%3A%20later)",
     });
     expect(new Set(rows.map((row) => row.parentId))).toEqual(new Set([root]));
   });

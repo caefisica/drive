@@ -134,6 +134,9 @@ async function seedTree() {
     ]);
 }
 
+// Search names every segment by ID because D1 may omit a sibling that Drive has.
+const sfx = (id: string) => `%20(dupID%3A%20${id})`;
+
 describe("GET /api/search", () => {
   it("treats % in the query as a literal character", async () => {
     const html = await search("50%");
@@ -162,10 +165,12 @@ describe("GET /api/search", () => {
     it("derives each link from the file's chain of folders", async () => {
       const html = await search("tree-");
 
-      expect(html).toContain('href="/0/tree-public.txt"');
-      expect(html).toContain('href="/0/tree-vault/"');
-      expect(html).toContain('href="/0/tree-vault/tree-inner.txt"');
-      expect(html).toContain('href="/0/tree-vault/tree-deep/tree-deepest.txt"');
+      expect(html).toContain(`href="/0/tree-public.txt${sfx("pub")}"`);
+      expect(html).toContain(`href="/0/tree-vault${sfx("vault")}/"`);
+      expect(html).toContain(`href="/0/tree-vault${sfx("vault")}/tree-inner.txt${sfx("inner")}"`);
+      expect(html).toContain(
+        `href="/0/tree-vault${sfx("vault")}/tree-deep${sfx("deep")}/tree-deepest.txt${sfx("deepest")}"`,
+      );
     });
 
     it("follows a folder that was renamed", async () => {
@@ -176,8 +181,10 @@ describe("GET /api/search", () => {
 
       const html = await search("tree-");
 
-      expect(html).toContain('href="/0/renamed/tree-deep/tree-deepest.txt"');
-      expect(html).not.toContain("/0/tree-vault/");
+      expect(html).toContain(
+        `href="/0/renamed${sfx("vault")}/tree-deep${sfx("deep")}/tree-deepest.txt${sfx("deepest")}"`,
+      );
+      expect(html).not.toContain("/0/tree-vault");
     });
 
     it("tells same-named files apart by ID", async () => {
@@ -191,8 +198,8 @@ describe("GET /api/search", () => {
 
       const html = await search("tree-public");
 
-      expect(html).toContain('href="/0/tree-public.txt%20(dupID%3A%20pub)"');
-      expect(html).toContain('href="/0/tree-public.txt%20(dupID%3A%20twin)"');
+      expect(html).toContain(`href="/0/tree-public.txt${sfx("pub")}"`);
+      expect(html).toContain(`href="/0/tree-public.txt${sfx("twin")}"`);
     });
 
     it("still answers, linking to the drives, when Google cannot give the root ID", async () => {

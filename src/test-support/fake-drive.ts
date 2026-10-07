@@ -32,8 +32,9 @@ export class FakeDrive {
   readonly files = new Map<string, FakeFile>();
   private readonly log: string[] = [];
 
-  // Awaited before each request is answered, so a test can vary how requests interleave.
-  delay: () => Promise<void> = async () => {};
+  // Awaited after each request is read and before it is answered, so a test can vary how requests
+  // interleave.
+  delay: (url: URL) => Promise<void> = async () => {};
   listPageSize = 1000;
   changesPageSize = 100;
   requests: URL[] = [];
@@ -67,9 +68,12 @@ export class FakeDrive {
       vi.fn(async (input: string | URL) => {
         const url = new URL(input);
         this.requests.push(url);
-        await this.delay();
 
-        return this.answer(url);
+        // The answer reflects the drive as the request found it, so a delayed answer arrives stale.
+        const response = this.answer(url);
+        await this.delay(url);
+
+        return response;
       }),
     );
   }

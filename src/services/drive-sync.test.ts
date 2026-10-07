@@ -176,7 +176,8 @@ describe("runIncrementalSync", () => {
 
     await runIncrementalSync(0, env);
 
-    expect(batchSizes).toEqual([3, 1]);
+    // Each batch also takes the next number of the drive's feed counter.
+    expect(batchSizes).toEqual([4, 2]);
 
     const ids = (await db.select().from(driveItems)).map((row) => row.id).sort();
     expect(ids).toEqual(["a", "b", "c"]);
@@ -383,7 +384,7 @@ describe("backfillD1Items", () => {
 
     await backfillD1Items(0, "root", files, env);
 
-    expect(batchSizes).toEqual([8]);
+    expect(batchSizes).toEqual([9]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(100);
   });
 
@@ -392,7 +393,7 @@ describe("backfillD1Items", () => {
 
     await backfillD1Items(0, "root", files, env);
 
-    expect(batchSizes).toEqual([8, 8, 4]);
+    expect(batchSizes).toEqual([9, 9, 5]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(250);
   });
 
@@ -454,7 +455,7 @@ describe("crawlFolder", () => {
     const result = await crawlFolder(0, "root", env);
 
     expect(result.fileCount).toBe(200);
-    expect(batchSizes).toEqual([8, 8]);
+    expect(batchSizes).toEqual([9, 9]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(200);
   });
 
@@ -507,70 +508,106 @@ describe("crawlFolder", () => {
         mimeType: "text/markdown",
         size: 2,
         modifiedTime: null,
+        feedSeq: null,
       },
     ]);
   });
 
-  describe("against a row a later change already wrote", () => {
-    const seedRow = (modifiedTime: number | null) =>
-      drizzle(env.DB).insert(driveItems).values({
+  describe("against the change feed", () => {
+    // A move leaves the modified time as it was, so both sides carry the same one.
+    const MODIFIED = "2026-01-01T00:00:00Z";
+    const listing = (name: string) => ({ ...listed("f1", name), modifiedTime: MODIFIED });
+    const move = (parent: string): DriveChange => ({
+      fileId: "f1",
+      removed: false,
+      file: {
         id: "f1",
-        driveIdx: 0,
-        parentId: "newer-parent",
-        name: "newer.txt",
+        name: "a.txt",
         mimeType: "text/plain",
-        modifiedTime,
+        parents: [parent],
+        modifiedTime: MODIFIED,
+      },
+    });
+    const rowOf = async () => (await drizzle(env.DB).select().from(driveItems))[0];
+
+    async function applyFeed(...changes: DriveChange[]) {
+      vi.mocked(fetchChanges).mockResolvedValueOnce(page(changes, { newStartPageToken: "next" }));
+      await runIncrementalSync(0, withDrives(1));
+    }
+
+    it("keeps a move the feed applied while the listing was being read", async () => {
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read = [listing("a.txt")];
+        await applyFeed(move("folderB"));
+        return read;
       });
 
-    const stale = (modifiedTime: string) => ({
-      ...listed("f1", "older.txt"),
-      modifiedTime,
+      await crawlFolder(0, "folderA", env);
+
+      expect(await rowOf()).toMatchObject({ parentId: "folderB", name: "a.txt" });
     });
 
-    it("keeps the row when the listing is older than it", async () => {
-      await seedRow(Date.parse("2026-02-01T00:00:00Z"));
-      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+    it("keeps a move the feed applied to a row the crawl had already written", async () => {
+      vi.mocked(listDirectory).mockResolvedValueOnce([listing("a.txt")]);
+      await crawlFolder(0, "folderA", env);
 
-      await crawlFolder(0, "older-parent", env);
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read = [listing("a.txt")];
+        await applyFeed(move("folderB"));
+        return read;
+      });
+      await crawlFolder(0, "folderA", env);
 
-      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
-        expect.objectContaining({ parentId: "newer-parent", name: "newer.txt" }),
-      ]);
+      expect(await rowOf()).toMatchObject({ parentId: "folderB" });
     });
 
-    it("replaces the row when the listing carries the same modified time", async () => {
-      await seedRow(Date.parse("2026-01-01T00:00:00Z"));
-      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+    it("applies a listing read after the feed wrote the row", async () => {
+      await applyFeed(move("folderA"));
+      vi.mocked(listDirectory).mockResolvedValueOnce([listing("renamed.txt")]);
 
-      await crawlFolder(0, "moved-to", env);
+      await crawlFolder(0, "folderB", env);
 
-      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
-        expect.objectContaining({ parentId: "moved-to", name: "older.txt" }),
-      ]);
+      expect(await rowOf()).toMatchObject({ parentId: "folderB", name: "renamed.txt" });
     });
 
-    it("replaces a row that has no modified time", async () => {
-      await seedRow(null);
-      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+    it("applies a listing to rows the feed has not written", async () => {
+      await drizzle(env.DB)
+        .insert(driveItems)
+        .values({ id: "f1", driveIdx: 0, parentId: "x", name: "old.txt", mimeType: "text/plain" });
+      vi.mocked(listDirectory).mockResolvedValueOnce([listing("new.txt")]);
 
-      await crawlFolder(0, "moved-to", env);
+      await crawlFolder(0, "folderB", env);
 
-      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
-        expect.objectContaining({ parentId: "moved-to", name: "older.txt" }),
-      ]);
+      expect(await rowOf()).toMatchObject({ parentId: "folderB", name: "new.txt" });
     });
 
-    it("lets the change feed overwrite nothing newer either", async () => {
-      await seedRow(Date.parse("2026-02-01T00:00:00Z"));
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([upsert("f1", "older.txt")], { newStartPageToken: "next" }),
-      );
+    it("applies each change in the feed whatever modified time the row holds", async () => {
+      await drizzle(env.DB)
+        .insert(driveItems)
+        .values({
+          id: "f1",
+          driveIdx: 0,
+          parentId: "x",
+          name: "newer.txt",
+          mimeType: "text/plain",
+          modifiedTime: Date.parse("2026-02-01T00:00:00Z"),
+        });
 
+      await applyFeed(move("folderB"));
+
+      expect(await rowOf()).toMatchObject({ parentId: "folderB", name: "a.txt" });
+    });
+
+    it("applies a listing read after a feed of several pages", async () => {
+      vi.mocked(fetchChanges)
+        .mockResolvedValueOnce(page([move("folderB")], { nextPageToken: "p2" }))
+        .mockResolvedValueOnce(page([upsert("g", "g.txt")], { newStartPageToken: "next" }));
       await runIncrementalSync(0, withDrives(1));
+      vi.mocked(listDirectory).mockResolvedValueOnce([listing("later.txt")]);
 
-      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
-        expect.objectContaining({ parentId: "newer-parent", name: "newer.txt" }),
-      ]);
+      await crawlFolder(0, "folderC", env);
+
+      expect(await rowOf()).toMatchObject({ parentId: "folderC", name: "later.txt" });
     });
   });
 });

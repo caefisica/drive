@@ -90,10 +90,10 @@ const expectedUrls = {
   D2: `/0/Docs${sfx("D2")}/`,
   A1: `/0/Docs${sfx("D1")}/a.txt${sfx("A1")}`,
   A2: `/0/Docs${sfx("D1")}/a.txt${sfx("A2")}`,
-  B1: `/0/Docs${sfx("D2")}/b.txt`,
-  S1: "/0/Notes/",
-  N1: "/0/Notes/notes.md",
-  T1: "/0/top2.txt",
+  B1: `/0/Docs${sfx("D2")}/b.txt${sfx("B1")}`,
+  S1: `/0/Notes${sfx("S1")}/`,
+  N1: `/0/Notes${sfx("S1")}/notes.md${sfx("N1")}`,
+  T1: `/0/top2.txt${sfx("T1")}`,
   L1: `/0/x%20(dupID%3A%20z)${sfx("L1")}`,
 };
 
@@ -275,7 +275,7 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
       expect(await resolvePath(0, segments, env as never), url).toMatchObject({ finalId: id });
     }
 
-    // The folders show the same names the index derives.
+    // The folders list their files by the shortest name that resolves.
     const home = await (await request(homeApp, "/")).json<{ items: Array<{ urlName: string }> }>();
     expect(home.items.map((item) => item.urlName).sort()).toEqual(
       [
@@ -322,11 +322,11 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
 
     const urls = await urlsOfIndex();
     expect(urls).toMatchObject({
-      D1: "/0/Papers/",
-      A1: "/0/Papers/a.txt",
-      S1: "/0/Papers/Sub/",
-      N1: "/0/Papers/Sub/notes.md",
-      T1: "/0/top.txt",
+      D1: `/0/Papers${sfx("D1")}/`,
+      A1: `/0/Papers${sfx("D1")}/a.txt${sfx("A1")}`,
+      S1: `/0/Papers${sfx("D1")}/Sub${sfx("S1")}/`,
+      N1: `/0/Papers${sfx("D1")}/Sub${sfx("S1")}/notes.md${sfx("N1")}`,
+      T1: `/0/top.txt${sfx("T1")}`,
     });
   });
 
@@ -338,22 +338,30 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     await runIncrementalSync(0, env as never);
 
     expect(await urlsOfIndex()).toMatchObject({
-      S1: "/0/Zone/Sub/",
-      N1: "/0/Zone/Sub/notes.md",
+      S1: `/0/Zone${sfx("Z")}/Sub${sfx("S1")}/`,
+      N1: `/0/Zone${sfx("Z")}/Sub${sfx("S1")}/notes.md${sfx("N1")}`,
     });
   });
 
-  it("changes the URL of a file when a twin arrives, and back when the twin goes", async () => {
+  it("keeps the URL of a file when a twin arrives and when the twin goes", async () => {
     await init({ crawled: true });
-    expect((await urlsOfIndex()).A1).toBe("/0/Docs/a.txt");
+    const url = `/0/Docs${sfx("D1")}/a.txt${sfx("A1")}`;
+    const resolves = async () =>
+      (await resolvePath(0, url.split("/").slice(2).map(decodeURIComponent), env as never))
+        ?.finalId;
+
+    expect((await urlsOfIndex()).A1).toBe(url);
+    expect(await resolves()).toBe("A1");
 
     fake.put(file("A2", "a.txt", "D1"));
     await runIncrementalSync(0, env as never);
-    expect((await urlsOfIndex()).A1).toBe(`/0/Docs/a.txt${sfx("A1")}`);
+    expect((await urlsOfIndex()).A1).toBe(url);
+    expect(await resolves()).toBe("A1");
 
     fake.remove("A2");
     await runIncrementalSync(0, env as never);
-    expect((await urlsOfIndex()).A1).toBe("/0/Docs/a.txt");
+    expect((await urlsOfIndex()).A1).toBe(url);
+    expect(await resolves()).toBe("A1");
   });
 
   it("lets a file recreated under a deleted file's name take its URL", async () => {
@@ -363,7 +371,7 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
 
     await runIncrementalSync(0, env as never);
 
-    expect(await urlsOfIndex()).toMatchObject({ T2: "/0/top.txt" });
+    expect(await urlsOfIndex()).toMatchObject({ T2: `/0/top.txt${sfx("T2")}` });
     expect(Object.keys(await urlsOfIndex())).not.toContain("T1");
   });
 
@@ -374,6 +382,55 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     await runIncrementalSync(0, env as never);
 
     expect((await urlsOfIndex()).lost).toBe("/0/");
+  });
+
+  it("keeps a move the feed applied while a crawl's listing of the old folder was in flight", async () => {
+    await init({ crawled: false });
+
+    // The listing is read before the move and arrives after the feed applied it.
+    let release = () => {};
+    let reached = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const listing = new Promise<void>((resolve) => (reached = resolve));
+    fake.delay = async (url) => {
+      if (!url.pathname.endsWith("/files")) return;
+
+      fake.delay = async () => {};
+      reached();
+      await held;
+    };
+
+    const crawling = consume({ type: "folder", driveIdx: 0, folderId: fake.rootId });
+    await listing;
+    fake.move("T1", "D1");
+    await runIncrementalSync(0, env as never);
+    release();
+    await crawling;
+
+    const rows = await drizzle(d1).select().from(driveItems);
+    expect(rows.find((row) => row.id === "T1")).toMatchObject({ parentId: "D1" });
+  });
+
+  it("links a file to a URL that resolves while its same-named twin is not indexed", async () => {
+    await init({ crawled: true });
+    fake.put(file("A2", "a.txt", "D1"));
+
+    const html = await (await request(searchApp, "/?q=a.txt")).text();
+    const href = /href="([^"]+)"/.exec(html)![1];
+    const segments = href.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
+
+    expect(await resolvePath(0, segments, env as never)).toMatchObject({ finalId: "A1" });
+  });
+
+  it("links a folder on the way to a URL that resolves while its twin is not indexed", async () => {
+    await init({ crawled: true });
+    fake.put(folder("D2", "Docs", root));
+
+    const html = await (await request(searchApp, "/?q=a.txt")).text();
+    const href = /href="([^"]+)"/.exec(html)![1];
+    const segments = href.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
+
+    expect(await resolvePath(0, segments, env as never)).toMatchObject({ finalId: "A1" });
   });
 
   it("links a file to its URL in a search result", async () => {
