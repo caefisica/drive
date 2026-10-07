@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { Link } from "@void/vue";
-import type { DriveFile, FileKind } from "../integrations/google-drive";
+import type { FileKind, ListedFile } from "../integrations/google-drive";
 
 defineProps<{
-  items: Array<DriveFile & { kind: FileKind }>;
+  items: Array<ListedFile & { kind: FileKind }>;
   basePath: string;
 }>();
 
@@ -25,8 +25,8 @@ function iconFor(kind: FileKind): string {
   return ICONS[kind] ?? ICONS.default;
 }
 
-function hrefFor(item: DriveFile & { kind: FileKind }, basePath: string): string {
-  const encoded = encodeURIComponent(item.name);
+function hrefFor(item: ListedFile & { kind: FileKind }, basePath: string): string {
+  const encoded = encodeURIComponent(item.urlName);
   if (item.kind === "folder") return `${basePath}${encoded}/`;
   return `${basePath}${encoded}`;
 }
@@ -67,7 +67,7 @@ function formatDate(iso?: string): string {
         class="w-4 h-4 shrink-0"
         aria-hidden="true"
       />
-      <span class="flex-1 truncate text-sm text-fg group-hover:text-fg">{{ item.name }}</span>
+      <span class="flex-1 truncate text-sm text-fg group-hover:text-fg">{{ item.urlName }}</span>
       <span class="hidden sm:block text-xs text-fg-subtle tabular-nums text-right shrink-0">
         {{ item.kind === "folder" ? "" : formatSize(item.size) }}
       </span>

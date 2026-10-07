@@ -3,7 +3,7 @@ import type { InferProps } from "void";
 import MarkdownIt from "markdown-it";
 import { codeToHtml } from "shiki";
 
-import { getDrives } from "../src/config";
+import { getDrives, summarizeDrive } from "../src/config";
 import {
   getAccessToken,
   getFileKind,
@@ -14,7 +14,7 @@ import {
   WORKSPACE_EXTENSION,
 } from "../src/integrations/google-drive";
 import { signStreamToken } from "../src/services/crypto";
-import { backfillD1Items, directoryUrlPath } from "../src/services/drive-sync";
+import { backfillD1Items } from "../src/services/drive-sync";
 import { checkFolderPassword, getUnlockedFolders } from "../src/services/folder-access";
 
 export type Props = InferProps<typeof loader>;
@@ -103,6 +103,9 @@ export const loader = defineHandler(async (c) => {
     return c.json({ error: "drive not found" }, 404);
   }
 
+  const publicDrives = drives.map(summarizeDrive);
+  const publicDrive = summarizeDrive(drive);
+
   const resolved = await resolvePath(driveIdx, segments, c.env);
 
   if (!resolved) {
@@ -119,33 +122,30 @@ export const loader = defineHandler(async (c) => {
       driveIdx,
       folderId: locked.folderId,
       path: raw,
-      drives,
-      drive,
+      drives: publicDrives,
+      drive: publicDrive,
       segments,
     };
   }
 
   if (isDirectory) {
-    const result = await listDirectory(driveIdx, finalId, c.env);
-    const items = result.files.map((file) => ({
+    const files = await listDirectory(driveIdx, finalId, c.env);
+    const items = files.map((file) => ({
       ...file,
       kind: getFileKind(file.mimeType),
     }));
 
     // Persist crawl results without delaying the directory response.
-    c.executionCtx.waitUntil(
-      backfillD1Items(driveIdx, finalId, directoryUrlPath(driveIdx, segments), result.files, c.env),
-    );
+    c.executionCtx.waitUntil(backfillD1Items(driveIdx, finalId, files, c.env));
 
     return {
       type: "directory" as const,
-      drives,
+      drives: publicDrives,
       driveIdx,
-      drive,
+      drive: publicDrive,
       path: raw,
       segments,
       items,
-      nextPageToken: result.nextPageToken,
     };
   }
 
@@ -201,9 +201,9 @@ export const loader = defineHandler(async (c) => {
 
   return {
     type: "file" as const,
-    drives,
+    drives: publicDrives,
     driveIdx,
-    drive,
+    drive: publicDrive,
     path: raw,
     segments: segments.slice(0, -1),
     file: { ...file, kind },
