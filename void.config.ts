@@ -1,0 +1,17 @@
+import { defineConfig } from "void/config";
+
+export default defineConfig({
+  inference: {
+    bindings: {
+      db: true,
+      kv: true,
+      storage: false,
+      ai: false,
+    },
+  },
+  worker: {
+    compatibility_date: "2026-08-30",
+    compatibility_flags: ["nodejs_compat", "nodejs_als"],
+  },
+  cloudflare: { name: "drive" },
+});
