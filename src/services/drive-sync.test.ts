@@ -117,7 +117,10 @@ function page(changes: DriveChange[], next: Partial<DriveChangesResult>): DriveC
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({
+    configPath: "test/wrangler.jsonc",
+    persist: false,
+  });
   const bindings = proxy.env as unknown as Env;
   await applyMigrations(bindings.DB);
   env = { ...bindings, DB: recordBatches(bindings.DB) };

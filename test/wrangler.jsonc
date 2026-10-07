@@ -1,0 +1,6 @@
+{
+  "name": "drive-test",
+  "compatibility_date": "2026-08-30",
+  "d1_databases": [{ "binding": "DB", "database_name": "test", "database_id": "local" }],
+  "kv_namespaces": [{ "binding": "KV", "id": "local" }],
+}

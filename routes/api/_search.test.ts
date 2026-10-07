@@ -1,20 +1,12 @@
 /// <reference types="vite/client" />
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CloudEnv } from "void";
 import { getPlatformProxy } from "wrangler";
 
 import { driveItems } from "../../db/schema";
 import { signUnlockCookie } from "../../src/services/crypto";
-
-const local = vi.hoisted(() => ({ db: undefined as unknown }));
-
-vi.mock("void/db", () => ({
-  get db() {
-    return local.db;
-  },
-}));
 
 const migrations = import.meta.glob<string>("../../db/migrations/*.sql", {
   query: "?raw",
@@ -64,6 +56,7 @@ async function search(q: string, options: { unlocked?: string[]; drive?: number 
   const query =
     `q=${encodeURIComponent(q)}` + (options.drive === undefined ? "" : `&d=${options.drive}`);
   const env = {
+    DB: d1,
     DRIVES: JSON.stringify([drive, drive]),
     KV: kv,
     UNLOCK_SECRET,
@@ -77,14 +70,15 @@ async function lock(driveIdx: number, folderId: string) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({
+    configPath: "test/wrangler.jsonc",
+    persist: false,
+  });
   ({ DB: d1, KV: kv } = proxy.env as unknown as {
     DB: D1Database;
     KV: KVNamespace;
   });
   await applyMigrations(d1);
-  local.db = drizzle(d1);
-
   const { GET } = await import("./search");
   app = new Hono<CloudEnv>().get("/", async (c) => (await GET(c)) as Response);
 });
