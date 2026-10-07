@@ -33,7 +33,10 @@ describe("set-password CLI", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("KV key:  passwd:0:root\nStored in local KV.\n");
 
-    const proxy = await getPlatformProxy({ persist: { path: join(persistDir, "v3") } });
+    const proxy = await getPlatformProxy({
+      configPath: "scripts/wrangler.jsonc",
+      persist: { path: join(persistDir, "v3") },
+    });
     try {
       const hash = await (proxy.env as unknown as { KV: KVNamespace }).KV.get("passwd:0:root");
       expect(await verifyPassword("secret", hash!)).toBe(true);

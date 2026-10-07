@@ -23,14 +23,7 @@ import { runIncrementalSync } from "./services/drive-sync";
 import { FakeDrive, file, folder } from "./test-support/fake-drive";
 
 const local = vi.hoisted(() => ({
-  db: undefined as unknown,
   queued: [] as unknown[],
-}));
-
-vi.mock("void/db", () => ({
-  get db() {
-    return local.db;
-  },
 }));
 
 vi.mock("void/queues", () => ({
@@ -197,9 +190,8 @@ async function listedUrlNames(path: string): Promise<string[]> {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
   ({ DB: d1, KV: kv } = proxy.env as unknown as { DB: D1Database; KV: KVNamespace });
-  local.db = drizzle(d1);
 
   for (const path of Object.keys(migrations).sort()) {
     for (const statement of migrations[path].split("--> statement-breakpoint")) {

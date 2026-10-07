@@ -69,7 +69,7 @@ function filesRootCalls() {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
   env = { ...(proxy.env as object), DRIVES: JSON.stringify(drives) } as typeof env;
 });
 

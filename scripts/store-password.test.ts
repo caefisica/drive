@@ -33,7 +33,10 @@ function store(options: Partial<StorePasswordOptions> = {}) {
 }
 
 async function storedHash(key: string): Promise<string | null> {
-  const proxy = await getPlatformProxy({ persist: { path: join(persistDir, "v3") } });
+  const proxy = await getPlatformProxy({
+    configPath: "scripts/wrangler.jsonc",
+    persist: { path: join(persistDir, "v3") },
+  });
 
   try {
     return await (proxy.env as unknown as { KV: KVNamespace }).KV.get(key);

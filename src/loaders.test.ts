@@ -155,7 +155,7 @@ function expectNoSecrets(props: unknown) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
   ({ DB: d1, KV: kv } = proxy.env as unknown as { DB: D1Database; KV: KVNamespace });
   await applyMigrations(d1);
 

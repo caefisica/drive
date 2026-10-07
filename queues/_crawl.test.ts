@@ -86,7 +86,7 @@ function messages() {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
   const bindings = proxy.env as unknown as Env;
 
   for (const path of Object.keys(migrations).sort()) {

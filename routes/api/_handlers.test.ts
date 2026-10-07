@@ -33,7 +33,7 @@ function request(path: string, init?: RequestInit) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ persist: false });
+  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
 
   const stream = await import("./stream/[fileId]");
   const exported = await import("./export/[fileId]");
