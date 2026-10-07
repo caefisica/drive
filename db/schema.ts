@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "void/schema-d1";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const driveItems = sqliteTable(
   "drive_items",

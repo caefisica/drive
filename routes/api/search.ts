@@ -1,6 +1,6 @@
 import { and, eq, notInArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/d1";
 import { defineHandler } from "void";
-import { db } from "void/db";
 
 import { driveItems } from "../../db/schema";
 import { getDrives } from "../../src/config";
@@ -64,7 +64,7 @@ export const GET = defineHandler(async (c) => {
     )`);
   }
 
-  const results = await db
+  const results = await drizzle(c.env.DB)
     .select()
     .from(driveItems)
     .where(and(...filters))
