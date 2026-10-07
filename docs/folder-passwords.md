@@ -7,46 +7,52 @@ unlocks that folder for 24 hours.
 ## Set a password
 
 [scripts/set-password.ts](../scripts/set-password.ts) hashes a password with
-PBKDF2 and prints the KV entry to store. It reads `DRIVES` from `.env`, which
-Bun loads, and exits when the drive is not in it:
+PBKDF2 and stores the hash in KV. It reads `DRIVES` from `.env`, which Bun
+loads, and exits when the drive is not in it. The logic is in
+[scripts/store-password.ts](../scripts/store-password.ts).
+
+Locally, it writes the KV that `vp dev` serves, in `.void`:
 
 ```sh
 bun scripts/set-password.ts --drive 0 --password secret123
 bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123
 ```
 
-```text
-KV key:  passwd:0:root
-KV hash: pbkdf2:PYIFguR2u9g9eYscLoegyA==:1dXg3cKW+7rfg6TrwqF/YBq5YQqHdHUv6xlxPZPcbOg=
+For a deployed app, add `--remote` and the id of the production `KV` namespace.
+The script then runs `wrangler kv key put` for you:
+
+```sh
+bun scripts/set-password.ts --drive 0 --password secret123 --remote --namespace-id <id>
 ```
 
-- `--drive` is the drive's index in [`DRIVES`](configuration.md#drive-index). It
-  defaults to `0`.
+```text
+KV key:  passwd:0:root
+Stored in local KV.
+```
+
+The script exits without writing on any argument it does not know, on a flag
+given twice, and on a flag without a value.
+
+- `--drive` is required. It is the drive's index in
+  [`DRIVES`](configuration.md#drive-index), a plain integer. The script exits
+  without writing when it is missing or malformed.
 - `--folder-id` is the Google Drive folder ID. It defaults to the drive's
   `rootId`, so without it the password locks the whole drive.
+- `--persist-to` is the local KV directory. It defaults to `.void` and cannot be
+  combined with `--remote`.
+- `--namespace-id` needs `--remote`. Without it the script would write the local
+  KV and ignore the namespace, so it exits instead.
 
 The key is `passwd:<drive index>:<folder ID>`. The app matches the key against
 the IDs of every folder on the requested path, starting at the drive's `rootId`.
-A password on a folder therefore covers everything below it.
+A password on a folder therefore covers everything below it. A My Drive root
+configured as `root` uses the key `passwd:<drive index>:root`.
 
-Store the printed hash under that key in the `KV` namespace.
-
-Locally, with the dev server running, write it through the local explorer API at
-the URL `vp dev` prints:
+Delete the key to remove the password:
 
 ```sh
-LOCAL=<local URL printed by vp dev>
-curl -X PUT "$LOCAL/cdn-cgi/local/explorer/api/storage/kv/namespaces/local/values/passwd:0:root" \
-  -H 'Content-Type: text/plain' --data '<hash>'
+wrangler kv key delete --binding KV --local --persist-to .void "passwd:0:root"
 ```
-
-For a deployed app, write it to the production namespace with Wrangler:
-
-```sh
-wrangler kv key put --namespace-id <id> --remote "passwd:0:root" '<hash>'
-```
-
-Delete the key to remove the password.
 
 ## Unlock
 
@@ -59,12 +65,12 @@ The form posts to `POST /api/unlock`
 { "driveIdx": 0, "folderId": "root", "password": "secret123" }
 ```
 
-| Status | Meaning                                  |
-| ------ | ---------------------------------------- |
-| 200    | Correct. Sets the `drive_unlock` cookie. |
-| 400    | A field is missing.                      |
-| 401    | Wrong password.                          |
-| 404    | No password is set for that folder.      |
+| Status | Meaning                                      |
+| ------ | -------------------------------------------- |
+| 200    | Correct. Sets the `drive_unlock` cookie.     |
+| 400    | The body is not JSON, or a field is missing. |
+| 401    | Wrong password.                              |
+| 404    | No password is set for that folder.          |
 
 The cookie is signed with `UNLOCK_SECRET`, is `HttpOnly` and `SameSite=Lax`, and
 lists every folder the visitor has unlocked. Rotating `UNLOCK_SECRET` locks

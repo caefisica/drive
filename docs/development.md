@@ -43,9 +43,14 @@ The tests in
 [src/services/drive-sync.test.ts](../src/services/drive-sync.test.ts) and
 [routes/api/_search.test.ts](../routes/api/_search.test.ts) run against a local
 D1 database with the migrations applied. The sync tests mock the Drive client
-and the queue. The
-[scripts/set-password.test.ts](../scripts/set-password.test.ts) tests run the
-script with Bun.
+and the queue. [src/index-urls.test.ts](../src/index-urls.test.ts) runs the
+crawl consumer, the cron, the webhook, the page loaders and search together
+against [src/test-support/fake-drive.ts](../src/test-support/fake-drive.ts), an
+in-memory Drive, with the writers interleaved. The
+[scripts/store-password.test.ts](../scripts/store-password.test.ts) tests call
+the password logic against a temporary local KV, and
+[scripts/set-password.test.ts](../scripts/set-password.test.ts) runs the script
+itself with Bun.
 
 ## Database changes
 

@@ -8,9 +8,13 @@ describes its columns and statuses.
 
 | Path        | Trigger                        | Writes                                  |
 | ----------- | ------------------------------ | --------------------------------------- |
-| Browsing    | A visitor opens a folder       | The folder's listing, with URL paths.   |
-| Crawl queue | A message on the `crawl` queue | Every folder of a drive, with paths.    |
+| Browsing    | A visitor opens a folder       | Rows for the folder's files.            |
+| Crawl queue | A message on the `crawl` queue | Rows for every folder of a drive.       |
 | Incremental | Cron, or a Drive webhook       | Files that changed since the last sync. |
+
+A row holds a file's own name and parent only. URLs are derived when a page or a
+search result is built, so no path is stored and the writers cannot disagree
+about one ([URL names](../architecture.md#url-names)).
 
 A new drive needs no setup. The first cron tick or webhook for it queues a crawl
 that indexes every folder, and later ticks apply only what changed.
@@ -28,13 +32,14 @@ a time and retries a failed message 3 times. It handles two message bodies:
 
 ```json
 { "type": "init", "driveIdx": 0 }
-{ "type": "folder", "driveIdx": 0, "folderId": "…", "path": "/0/Lectures/" }
+{ "type": "folder", "driveIdx": 0, "folderId": "…" }
 ```
 
 - `init` stores Drive's current change token in `sync_state`, then enqueues a
-  `folder` message for the drive's root.
-- `folder` lists the folder, upserts every item, and enqueues a `folder` message
-  for each subfolder.
+  `folder` message for the drive's root. It looks the root up first, so a My
+  Drive configured as `root` starts at its [real ID](#root-id).
+- `folder` lists the folder, upserts every item unless the stored row has a
+  newer modified time, and enqueues a `folder` message for each subfolder.
 
 `syncDrive` queues `init` for a drive that has no change token, at most once an
 hour per drive. If a crawl is interrupted before it stores the token, the next
@@ -45,14 +50,24 @@ tick after that hour queues `init` again.
 `syncDrive(driveIdx, env)` is what the cron job and the webhook call. When the
 drive has a stored token it runs `runIncrementalSync`, which reads Drive's
 change feed from that token page by page. For each change it deletes the row of
-a removed or trashed file, and inserts or updates the row of any other file. A
-changed file gets its URL path from its parent folder's path, taken from the
-index or from the same page of changes. Each page is one D1 batch. It then
-stores the new token and sets the status to `idle`. On an error it sets the
-status to `error` and rethrows, and the next tick tries again.
+a removed or trashed file, and inserts or updates the row of any other file with
+its name and parent as Drive reports them, unless the stored row has a newer
+modified time. A renamed or moved folder is one row change, and the URLs below
+it follow. Each page is one D1 batch. It then stores the new token and sets the
+status to `idle`. On an error it sets the status to `error` and rethrows, and
+the next tick tries again.
 
-A file whose parent folder is not in the index keeps the path it had, and a new
-one has none, so search links it to the drive root.
+Search links a file whose chain of parents does not reach the drive's root, such
+as one in a folder the index does not hold yet, to the drive.
+
+### Root ID
+
+Google reports a My Drive's real root ID, not the `root` alias, as the parent of
+its top-level files. The crawl, browsing and search resolve the alias to that ID
+with `files/root` and cache it in KV as `rootid:<drive index>`. A shared drive
+or folder drive already uses the ID from `DRIVES`, which is the ID Google
+reports as its parent. A top-level file therefore has the drive root as its
+parent, and its URL ends the chain of parents there.
 
 ### Cron
 
