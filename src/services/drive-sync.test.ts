@@ -14,22 +14,36 @@ import {
 import { getPlatformProxy } from "wrangler";
 
 import { driveItems, syncState } from "../../db/schema";
-import type { DriveChange, DriveChangesResult } from "../integrations/google-drive";
-import { fetchChanges, getStartPageToken, listDirectory } from "../integrations/google-drive";
+import type * as GoogleDrive from "../integrations/google-drive";
+import type { DriveChange, DriveChangesResult, ListedFile } from "../integrations/google-drive";
+import {
+  fetchChanges,
+  getStartPageToken,
+  listDirectory,
+  resolveFolderId,
+} from "../integrations/google-drive";
 import {
   backfillD1Items,
   crawlFolder,
-  directoryUrlPath,
   initializeSyncState,
   runIncrementalSync,
   syncDrive,
 } from "./drive-sync";
 
-vi.mock("../integrations/google-drive", () => ({
+vi.mock("../integrations/google-drive", async (importOriginal) => ({
+  ...(await importOriginal<typeof GoogleDrive>()),
   fetchChanges: vi.fn(),
   getStartPageToken: vi.fn(),
   listDirectory: vi.fn(),
+  resolveFolderId: vi.fn(),
 }));
+
+const REAL_ROOT = "0AReAlRoOtId";
+
+// Google reports a My Drive's real root ID where the drive config says `root`.
+async function resolveRoot(_driveIdx: number, folderId: string): Promise<string> {
+  return folderId === "root" ? REAL_ROOT : folderId;
+}
 
 const sendCrawl = vi.hoisted(() => vi.fn());
 
@@ -107,9 +121,8 @@ function change(id: string, name: string, parent: string, mimeType = "text/plain
   return { fileId: id, removed: false, file: { id, name, mimeType, parents: [parent] } };
 }
 
-async function urlPaths(): Promise<Record<string, string | null>> {
-  const rows = await drizzle(env.DB).select().from(driveItems);
-  return Object.fromEntries(rows.map((row) => [row.id, row.urlPath]));
+function listed(id: string, name: string, urlName = name, mimeType = "text/plain"): ListedFile {
+  return { id, name, urlName, mimeType };
 }
 
 function page(changes: DriveChange[], next: Partial<DriveChangesResult>): DriveChangesResult {
@@ -137,6 +150,9 @@ beforeEach(async () => {
   await db.insert(syncState).values({ driveIdx: 0, pageToken: "start", status: "idle" });
   vi.mocked(fetchChanges).mockReset();
   vi.mocked(listDirectory).mockReset();
+  vi.mocked(resolveFolderId)
+    .mockReset()
+    .mockImplementation(async (_driveIdx, folderId) => folderId);
   batchSizes = [];
 });
 
@@ -169,114 +185,50 @@ describe("runIncrementalSync", () => {
     expect(state).toMatchObject({ pageToken: "next", status: "idle" });
   });
 
-  describe("url paths", () => {
-    const row = (id: string, name: string, parentId: string, urlPath: string | null) => ({
-      id,
-      driveIdx: 0,
-      parentId,
-      name,
-      mimeType: id.startsWith("dir") ? FOLDER : "text/plain",
-      urlPath,
-    });
+  it("stores a changed file's own name and parent, whether or not its folder is indexed", async () => {
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page([change("f", "a.txt", "unindexed-folder"), change("g", "b.txt", "root")], {
+        newStartPageToken: "next",
+      }),
+    );
 
-    it("gives a new file the path of its crawled parent folder", async () => {
-      await drizzle(env.DB)
-        .insert(driveItems)
-        .values(row("dir-a", "a", "root", "/0/a/"));
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("n", "new.txt", "dir-a")], { newStartPageToken: "next" }),
-      );
+    await runIncrementalSync(0, withDrives(1));
 
-      await runIncrementalSync(0, withDrives(1));
+    expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+      expect.objectContaining({ id: "f", name: "a.txt", parentId: "unindexed-folder" }),
+      expect.objectContaining({ id: "g", name: "b.txt", parentId: "root" }),
+    ]);
+  });
 
-      expect(await urlPaths()).toMatchObject({ n: "/0/a/new.txt" });
-    });
+  it("follows a rename and a move of a file it already holds", async () => {
+    await drizzle(env.DB)
+      .insert(driveItems)
+      .values({ id: "f", driveIdx: 0, parentId: "a", name: "old.txt", mimeType: "text/plain" });
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page([change("f", "new.txt", "b")], { newStartPageToken: "next" }),
+    );
 
-    it("gives a file in the drive root a path under the drive", async () => {
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("n", "new.txt", "root")], { newStartPageToken: "next" }),
-      );
+    await runIncrementalSync(0, withDrives(1));
 
-      await runIncrementalSync(0, withDrives(1));
+    expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+      expect.objectContaining({ id: "f", name: "new.txt", parentId: "b" }),
+    ]);
+  });
 
-      expect(await urlPaths()).toEqual({ n: "/0/new.txt" });
-    });
+  it("holds two files of one name in one folder, each under its own ID", async () => {
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page([change("a", "dup.txt", "root"), change("b", "dup.txt", "root")], {
+        newStartPageToken: "next",
+      }),
+    );
 
-    it("keeps the search path of a changed file and follows a rename", async () => {
-      await drizzle(env.DB)
-        .insert(driveItems)
-        .values([
-          row("dir-a", "a", "root", "/0/a/"),
-          row("f1", "same.txt", "dir-a", "/0/a/same.txt"),
-          row("f2", "old.txt", "dir-a", "/0/a/old.txt"),
-        ]);
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("f1", "same.txt", "dir-a"), change("f2", "renamed.txt", "dir-a")], {
-          newStartPageToken: "next",
-        }),
-      );
+    await runIncrementalSync(0, withDrives(1));
 
-      await runIncrementalSync(0, withDrives(1));
-
-      expect(await urlPaths()).toMatchObject({
-        f1: "/0/a/same.txt",
-        f2: "/0/a/renamed.txt",
-      });
-    });
-
-    it("keeps the stored path when the parent folder is not indexed", async () => {
-      await drizzle(env.DB)
-        .insert(driveItems)
-        .values(row("f1", "a.txt", "root", "/0/a.txt"));
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("f1", "a.txt", "unknown-folder")], { newStartPageToken: "next" }),
-      );
-
-      await runIncrementalSync(0, withDrives(1));
-
-      expect(await urlPaths()).toEqual({ f1: "/0/a.txt" });
-    });
-
-    it("resolves a file whose new parent folder arrives later in the same page", async () => {
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("f", "x.txt", "dir-new"), change("dir-new", "docs", "root", FOLDER)], {
-          newStartPageToken: "next",
-        }),
-      );
-
-      await runIncrementalSync(0, withDrives(1));
-
-      expect(await urlPaths()).toEqual({ "dir-new": "/0/docs/", f: "/0/docs/x.txt" });
-    });
-
-    it("lets a recreated file take the path of the one it replaces", async () => {
-      await drizzle(env.DB)
-        .insert(driveItems)
-        .values(row("old", "x.txt", "root", "/0/x.txt"));
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("new", "x.txt", "root"), { fileId: "old", removed: true }], {
-          newStartPageToken: "next",
-        }),
-      );
-
-      await runIncrementalSync(0, withDrives(1));
-
-      expect(await urlPaths()).toEqual({ new: "/0/x.txt" });
-    });
-
-    it("syncs a page where two files share a name in one folder", async () => {
-      vi.mocked(fetchChanges).mockResolvedValueOnce(
-        page([change("a", "dup.txt", "root"), change("b", "dup.txt", "root")], {
-          newStartPageToken: "next",
-        }),
-      );
-
-      await runIncrementalSync(0, withDrives(1));
-
-      const paths = Object.values(await urlPaths());
-      expect(paths.filter((path) => path === "/0/dup.txt")).toHaveLength(1);
-      expect(Object.keys(await urlPaths()).sort()).toEqual(["a", "b"]);
-    });
+    const rows = await drizzle(env.DB).select().from(driveItems);
+    expect(rows.map((row) => `${row.id}:${row.name}`).sort((a, b) => a.localeCompare(b))).toEqual([
+      "a:dup.txt",
+      "b:dup.txt",
+    ]);
   });
 
   it("applies nothing from a page when one of its writes fails", async () => {
@@ -427,79 +379,124 @@ describe("syncDrive", () => {
 
 describe("backfillD1Items", () => {
   it("splits a full page of 100 files into statements under D1's bound-parameter limit", async () => {
-    const files = Array.from({ length: 100 }, (_, i) => ({
-      id: `f${i}`,
-      name: `f${i}.txt`,
-      mimeType: "text/plain",
-    }));
+    const files = Array.from({ length: 100 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
 
-    await backfillD1Items(0, "root", "/0/", files, env);
+    await backfillD1Items(0, "root", files, env);
 
-    expect(batchSizes).toEqual([9]);
+    expect(batchSizes).toEqual([8]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(100);
   });
 
-  it("stores the same paths a crawl does: one slash at the root, a trailing slash on folders", async () => {
-    const files = [
-      { id: "sub", name: "sub", mimeType: FOLDER },
-      { id: "f", name: "a.txt", mimeType: "text/plain" },
-    ];
+  it("writes a folder of several hundred files in batches of 100 rows", async () => {
+    const files = Array.from({ length: 250 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
 
-    await backfillD1Items(0, "root", directoryUrlPath(0, []), files, env);
+    await backfillD1Items(0, "root", files, env);
 
-    expect(await urlPaths()).toEqual({ sub: "/0/sub/", f: "/0/a.txt" });
+    expect(batchSizes).toEqual([8, 8, 4]);
+    expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(250);
   });
 
-  it("stores nested folder contents under the folder's own path", async () => {
-    const files = [{ id: "f", name: "a.txt", mimeType: "text/plain" }];
+  it("stores the real root ID as the parent of a My Drive's top-level files", async () => {
+    vi.mocked(resolveFolderId).mockImplementation(resolveRoot);
 
-    await backfillD1Items(0, "dir-b", directoryUrlPath(0, ["a", "b"]), files, env);
+    await backfillD1Items(0, "root", [listed("f", "a.txt")], env);
 
-    expect(await urlPaths()).toEqual({ f: "/0/a/b/a.txt" });
+    const [row] = await drizzle(env.DB).select().from(driveItems);
+    expect(row).toMatchObject({ id: "f", parentId: REAL_ROOT });
   });
 
-  it("leaves one entry per file when a crawl and a browse list the same folder", async () => {
-    const files = [
-      { id: "sub", name: "sub", mimeType: FOLDER },
-      { id: "f", name: "a.txt", mimeType: "text/plain" },
-    ];
-    vi.mocked(listDirectory).mockResolvedValueOnce({ files });
+  it("stores each file's own name, not the name its URL uses", async () => {
+    await backfillD1Items(
+      0,
+      "dir",
+      [listed("a", "x.txt", "x.txt (dupID: a)"), listed("b", "x.txt", "x.txt (dupID: b)")],
+      env,
+    );
 
-    await backfillD1Items(0, "root", directoryUrlPath(0, []), files, env);
-    await crawlFolder(0, "root", "/0/", env);
+    const rows = await drizzle(env.DB).select().from(driveItems);
+    expect(rows.map((row) => [row.id, row.name, row.parentId])).toEqual([
+      ["a", "x.txt", "dir"],
+      ["b", "x.txt", "dir"],
+    ]);
+  });
+
+  it("leaves a row it already holds as it is", async () => {
+    await drizzle(env.DB).insert(driveItems).values({
+      id: "f",
+      driveIdx: 0,
+      parentId: "new-home",
+      name: "new.txt",
+      mimeType: "text/plain",
+    });
+
+    await backfillD1Items(0, "stale-listing", [listed("f", "old.txt")], env);
+
+    const [row] = await drizzle(env.DB).select().from(driveItems);
+    expect(row).toMatchObject({ name: "new.txt", parentId: "new-home" });
+  });
+
+  it("leaves one row per file when a crawl and a browse list the same folder", async () => {
+    const files = [listed("sub", "sub", "sub", FOLDER), listed("f", "a.txt")];
+    vi.mocked(listDirectory).mockResolvedValueOnce(files);
+
+    await backfillD1Items(0, "root", files, env);
+    await crawlFolder(0, "root", env);
 
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(2);
-    expect(await urlPaths()).toEqual({ sub: "/0/sub/", f: "/0/a.txt" });
   });
 });
 
 describe("crawlFolder", () => {
-  it("stores every file of a 200-file listing page in one D1 batch", async () => {
-    const files = Array.from({ length: 200 }, (_, i) => ({
-      id: `f${i}`,
-      name: `f${i}.txt`,
-      mimeType: "text/plain",
-    }));
-    vi.mocked(listDirectory).mockResolvedValueOnce({ files });
+  it("stores every file of a 200-file listing, 100 rows to a D1 batch", async () => {
+    const files = Array.from({ length: 200 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
+    vi.mocked(listDirectory).mockResolvedValueOnce(files);
 
-    const result = await crawlFolder(0, "root", "/0/", env);
+    const result = await crawlFolder(0, "root", env);
 
     expect(result.fileCount).toBe(200);
-    expect(batchSizes).toEqual([17]);
+    expect(batchSizes).toEqual([8, 8]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(200);
+  });
+
+  it("returns the folders to crawl next and counts the files", async () => {
+    vi.mocked(listDirectory).mockResolvedValueOnce([
+      listed("sub", "sub", "sub", FOLDER),
+      listed("f", "a.txt"),
+    ]);
+
+    expect(await crawlFolder(0, "root", env)).toEqual({ fileCount: 1, folderIds: ["sub"] });
+  });
+
+  it("stores each file's own name, not the name its URL uses", async () => {
+    vi.mocked(listDirectory).mockResolvedValueOnce([
+      listed("a", "x.txt", "x.txt (dupID: a)"),
+      listed("b", "x.txt", "x.txt (dupID: b)"),
+    ]);
+
+    await crawlFolder(0, "dir", env);
+
+    const rows = await drizzle(env.DB).select().from(driveItems);
+    expect(rows.map((row) => row.name)).toEqual(["x.txt", "x.txt"]);
+  });
+
+  it("stores nothing for an empty folder", async () => {
+    vi.mocked(listDirectory).mockResolvedValueOnce([]);
+
+    expect(await crawlFolder(0, "root", env)).toEqual({ fileCount: 0, folderIds: [] });
+    expect(batchSizes).toEqual([]);
   });
 
   it("updates a re-crawled file that was renamed, moved and resized", async () => {
     const db = drizzle(env.DB);
-    const file = { id: "f1", name: "old.txt", mimeType: "text/plain", size: 1 };
+    const file = { ...listed("f1", "old.txt"), size: 1 };
 
-    vi.mocked(listDirectory).mockResolvedValueOnce({ files: [file] });
-    await crawlFolder(0, "folderA", "/0/a/", env);
+    vi.mocked(listDirectory).mockResolvedValueOnce([file]);
+    await crawlFolder(0, "folderA", env);
 
-    vi.mocked(listDirectory).mockResolvedValueOnce({
-      files: [{ ...file, name: "new.md", mimeType: "text/markdown", size: 2 }],
-    });
-    await crawlFolder(0, "folderB", "/0/b/", env);
+    vi.mocked(listDirectory).mockResolvedValueOnce([
+      { ...file, name: "new.md", urlName: "new.md", mimeType: "text/markdown", size: 2 },
+    ]);
+    await crawlFolder(0, "folderB", env);
 
     expect(await db.select().from(driveItems)).toEqual([
       {
@@ -510,8 +507,70 @@ describe("crawlFolder", () => {
         mimeType: "text/markdown",
         size: 2,
         modifiedTime: null,
-        urlPath: "/0/b/new.md",
       },
     ]);
+  });
+
+  describe("against a row a later change already wrote", () => {
+    const seedRow = (modifiedTime: number | null) =>
+      drizzle(env.DB).insert(driveItems).values({
+        id: "f1",
+        driveIdx: 0,
+        parentId: "newer-parent",
+        name: "newer.txt",
+        mimeType: "text/plain",
+        modifiedTime,
+      });
+
+    const stale = (modifiedTime: string) => ({
+      ...listed("f1", "older.txt"),
+      modifiedTime,
+    });
+
+    it("keeps the row when the listing is older than it", async () => {
+      await seedRow(Date.parse("2026-02-01T00:00:00Z"));
+      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+
+      await crawlFolder(0, "older-parent", env);
+
+      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+        expect.objectContaining({ parentId: "newer-parent", name: "newer.txt" }),
+      ]);
+    });
+
+    it("replaces the row when the listing carries the same modified time", async () => {
+      await seedRow(Date.parse("2026-01-01T00:00:00Z"));
+      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+
+      await crawlFolder(0, "moved-to", env);
+
+      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+        expect.objectContaining({ parentId: "moved-to", name: "older.txt" }),
+      ]);
+    });
+
+    it("replaces a row that has no modified time", async () => {
+      await seedRow(null);
+      vi.mocked(listDirectory).mockResolvedValueOnce([stale("2026-01-01T00:00:00Z")]);
+
+      await crawlFolder(0, "moved-to", env);
+
+      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+        expect.objectContaining({ parentId: "moved-to", name: "older.txt" }),
+      ]);
+    });
+
+    it("lets the change feed overwrite nothing newer either", async () => {
+      await seedRow(Date.parse("2026-02-01T00:00:00Z"));
+      vi.mocked(fetchChanges).mockResolvedValueOnce(
+        page([upsert("f1", "older.txt")], { newStartPageToken: "next" }),
+      );
+
+      await runIncrementalSync(0, withDrives(1));
+
+      expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
+        expect.objectContaining({ parentId: "newer-parent", name: "newer.txt" }),
+      ]);
+    });
   });
 });

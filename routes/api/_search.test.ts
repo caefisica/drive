@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -95,14 +96,18 @@ beforeEach(async () => {
       id: `id-${name}`,
       driveIdx: 0,
       name,
+      parentId: "root",
       mimeType: "text/plain",
-      urlPath: `/0/${name}`,
     })),
   );
 
   for (const { name } of (await kv.list({ prefix: "passwd:" })).keys) {
     await kv.delete(name);
   }
+
+  // The drives are rooted at `root`; the ID Google reports for it is what top-level files name.
+  await kv.put("rootid:0", "root");
+  await kv.put("rootid:1", "root");
 });
 
 // The fixture nests vault/ inside root/ and deep/ inside vault/. Drive 1 reuses the
@@ -114,7 +119,6 @@ async function seedTree() {
     parentId,
     name,
     mimeType,
-    urlPath: `/0/${name}`,
   });
   const folder = "application/vnd.google-apps.folder";
 
@@ -150,6 +154,77 @@ describe("GET /api/search", () => {
 
     expect(html).toContain(">a\\b</a>");
     expect(html).not.toContain(">abc</a>");
+  });
+
+  describe("result links", () => {
+    beforeEach(seedTree);
+
+    it("derives each link from the file's chain of folders", async () => {
+      const html = await search("tree-");
+
+      expect(html).toContain('href="/0/tree-public.txt"');
+      expect(html).toContain('href="/0/tree-vault/"');
+      expect(html).toContain('href="/0/tree-vault/tree-inner.txt"');
+      expect(html).toContain('href="/0/tree-vault/tree-deep/tree-deepest.txt"');
+    });
+
+    it("follows a folder that was renamed", async () => {
+      await drizzle(d1)
+        .update(driveItems)
+        .set({ name: "renamed" })
+        .where(and(eq(driveItems.id, "vault"), eq(driveItems.driveIdx, 0)));
+
+      const html = await search("tree-");
+
+      expect(html).toContain('href="/0/renamed/tree-deep/tree-deepest.txt"');
+      expect(html).not.toContain("/0/tree-vault/");
+    });
+
+    it("tells same-named files apart by ID", async () => {
+      await drizzle(d1).insert(driveItems).values({
+        id: "twin",
+        driveIdx: 0,
+        parentId: "root",
+        name: "tree-public.txt",
+        mimeType: "text/plain",
+      });
+
+      const html = await search("tree-public");
+
+      expect(html).toContain('href="/0/tree-public.txt%20(dupID%3A%20pub)"');
+      expect(html).toContain('href="/0/tree-public.txt%20(dupID%3A%20twin)"');
+    });
+
+    it("still answers, linking to the drives, when Google cannot give the root ID", async () => {
+      await kv.delete("rootid:0");
+      await kv.delete("rootid:1");
+      await kv.delete("auth:0:token");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("down", { status: 503 })),
+      );
+
+      try {
+        const html = await search("tree-public");
+
+        expect(html).toContain("tree-public.txt");
+        expect(html).toContain('href="/0/"');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("links a file whose folders are not indexed to its drive", async () => {
+      await drizzle(d1).insert(driveItems).values({
+        id: "orphan",
+        driveIdx: 0,
+        parentId: "unindexed",
+        name: "tree-orphan.txt",
+        mimeType: "text/plain",
+      });
+
+      expect(await search("tree-orphan")).toContain('href="/0/"');
+    });
   });
 
   describe("folder passwords", () => {
