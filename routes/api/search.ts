@@ -5,6 +5,7 @@ import { defineHandler } from "void";
 import { driveItems } from "../../db/schema";
 import { getDrives } from "../../src/config";
 import { getUnlockedFolders, listClosedFolders } from "../../src/services/folder-access";
+import { itemUrls } from "../../src/services/item-urls";
 
 export const GET = defineHandler(async (c) => {
   const q = c.req.query("q")?.trim() ?? "";
@@ -70,9 +71,11 @@ export const GET = defineHandler(async (c) => {
     .where(and(...filters))
     .limit(50);
 
+  const urls = await itemUrls(db, results, c.env);
+
   const rows = results
     .map((item) => {
-      const href = item.urlPath ?? `/${item.driveIdx}/`;
+      const href = urls.get(item.id) ?? `/${item.driveIdx}/`;
       const driveName = drives[item.driveIdx]?.name ?? `drive ${item.driveIdx}`;
 
       return `<li><a href="${escapeHtml(href)}">${escapeHtml(item.name)}</a> <small>${escapeHtml(driveName)}</small></li>`;
