@@ -5,7 +5,12 @@ const SUFFIX = /^([\s\S]*) \(dupID: ([^)]+)\)$/;
 // A name that already looks like a suffixed one is suffixed too. Every URL that ends in a suffix
 // then parses to exactly one file, and every plain URL names a file that has no suffix to parse.
 export function urlName(name: string, id: string, sharedWithSibling: boolean): string {
-  return sharedWithSibling || SUFFIX.test(name) ? `${name} (dupID: ${id})` : name;
+  return sharedWithSibling || SUFFIX.test(name) ? idUrlName(name, id) : name;
+}
+
+// The suffixed name resolves by ID even when the caller cannot see every sibling.
+export function idUrlName(name: string, id: string): string {
+  return `${name} (dupID: ${id})`;
 }
 
 // `files` must be every file of one folder: a name is shared only if two of them carry it.
