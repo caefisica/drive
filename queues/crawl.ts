@@ -1,11 +1,12 @@
 import { defineQueue } from "void";
 import { queues } from "void/queues";
-import { crawlFolder, directoryUrlPath, initializeSyncState } from "../src/services/drive-sync";
+import { crawlFolder, initializeSyncState } from "../src/services/drive-sync";
 import { getDrive } from "../src/config";
+import { resolveFolderId } from "../src/integrations/google-drive";
 
 type CrawlMessage =
   | { type: "init"; driveIdx: number }
-  | { type: "folder"; driveIdx: number; folderId: string; path: string };
+  | { type: "folder"; driveIdx: number; folderId: string };
 
 export const maxBatchSize = 1;
 export const maxBatchTimeout = 30;
@@ -23,28 +24,20 @@ export default defineQueue<CrawlMessage>(async (batch, env) => {
         continue;
       }
 
+      const rootId = await resolveFolderId(driveIdx, drive.rootId, env);
+
       await initializeSyncState(driveIdx, env);
 
-      await queues.crawl.send({
-        type: "folder",
-        driveIdx,
-        folderId: drive.rootId,
-        path: directoryUrlPath(driveIdx, []),
-      });
+      await queues.crawl.send({ type: "folder", driveIdx, folderId: rootId });
 
       msg.ack();
     } else if (type === "folder") {
-      const { driveIdx, folderId, path } = msg.body;
+      const { driveIdx, folderId } = msg.body;
 
-      const { folderIds } = await crawlFolder(driveIdx, folderId, path, env);
+      const { folderIds } = await crawlFolder(driveIdx, folderId, env);
 
-      for (const sub of folderIds) {
-        await queues.crawl.send({
-          type: "folder",
-          driveIdx,
-          folderId: sub.id,
-          path: sub.path,
-        });
+      for (const id of folderIds) {
+        await queues.crawl.send({ type: "folder", driveIdx, folderId: id });
       }
 
       msg.ack();

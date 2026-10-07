@@ -1,5 +1,5 @@
 import type { CloudEnv } from "void";
-import { and, eq, getTableColumns, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
@@ -8,7 +8,14 @@ import { queues } from "void/queues";
 
 import { driveItems, syncState } from "../../db/schema";
 import { getDrive } from "../config";
-import { fetchChanges, getStartPageToken, listDirectory } from "../integrations/google-drive";
+import {
+  fetchChanges,
+  getStartPageToken,
+  listDirectory,
+  FOLDER_MIME,
+  resolveFolderId,
+  type DriveFile,
+} from "../integrations/google-drive";
 
 // D1 rejects statements with more than 100 bound parameters.
 // A multi-row insert binds one parameter per column in each row.
@@ -28,110 +35,46 @@ function chunkRows<T>(rows: T[]): T[][] {
   return chunks;
 }
 
+const ROWS_PER_BATCH = 100;
+
+async function insertRows(
+  db: ReturnType<typeof makeDb>,
+  rows: Array<typeof driveItems.$inferInsert>,
+  insert: (chunk: Array<typeof driveItems.$inferInsert>) => BatchItem<"sqlite">,
+): Promise<void> {
+  for (let start = 0; start < rows.length; start += ROWS_PER_BATCH) {
+    const statements = chunkRows(rows.slice(start, start + ROWS_PER_BATCH)).map(insert);
+
+    await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+  }
+}
+
 // Returns the value proposed by the conflicting insert, not the column's current value.
 function incoming(column: SQLiteColumn) {
   return sql.raw(`excluded."${column.name}"`);
 }
 
-const FOLDER_MIME = "application/vnd.google-apps.folder";
+// An upsert replaces a row only with data at least as new as the row's. A listing read earlier
+// than a change the feed already applied therefore cannot undo that change.
+const notOlderThanStored = sql`${driveItems.modifiedTime} is null
+  or ${incoming(driveItems.modifiedTime)} is null
+  or ${incoming(driveItems.modifiedTime)} >= ${driveItems.modifiedTime}`;
 
-// Folder paths end in a slash, so a child path is its parent's path plus its name.
-export function directoryUrlPath(driveIdx: number, segments: string[]): string {
-  return `/${[driveIdx, ...segments].join("/")}/`;
-}
-
-function itemUrlPath(parentPath: string, file: { name: string; mimeType: string }): string {
-  return `${parentPath}${file.name}${file.mimeType === FOLDER_MIME ? "/" : ""}`;
-}
-
-type ChangedFile = { id: string; name: string; mimeType: string; parents?: string[] };
-
-// Maps each changed file to its url path. Parents come from the index or from the same
-// page, and a file whose parent is neither stays out of the map.
-async function resolveUrlPaths(
-  db: ReturnType<typeof makeDb>,
+// A row holds what Drive says about one file: its own name, not the name its URL uses.
+function itemRow(
   driveIdx: number,
-  rootId: string | undefined,
-  files: ChangedFile[],
-): Promise<Map<string, string>> {
-  const inPage = new Set(files.map((file) => file.id));
-  const parentPaths = new Map<string, string>();
-
-  if (rootId) {
-    parentPaths.set(rootId, directoryUrlPath(driveIdx, []));
-  }
-
-  const parentIds = new Set(files.flatMap((file) => file.parents?.slice(0, 1) ?? []));
-  const indexedIds = [...parentIds].filter((id) => !inPage.has(id) && !parentPaths.has(id));
-
-  for (const chunk of chunkRows(indexedIds)) {
-    const rows = await db
-      .select({ id: driveItems.id, urlPath: driveItems.urlPath })
-      .from(driveItems)
-      .where(and(eq(driveItems.driveIdx, driveIdx), inArray(driveItems.id, chunk)));
-
-    for (const { id, urlPath } of rows) {
-      if (urlPath) parentPaths.set(id, urlPath);
-    }
-  }
-
-  const paths = new Map<string, string>();
-  // Drive allows two files of one name in a folder, but a path names only one.
-  const claimed = new Set<string>();
-  let pending = files;
-
-  while (pending.length > 0) {
-    const unresolved: ChangedFile[] = [];
-
-    for (const file of pending) {
-      const parentPath = parentPaths.get(file.parents?.[0] ?? "");
-
-      if (!parentPath) {
-        unresolved.push(file);
-        continue;
-      }
-
-      const path = itemUrlPath(parentPath, file);
-
-      if (file.mimeType === FOLDER_MIME) {
-        parentPaths.set(file.id, path);
-      }
-
-      if (!claimed.has(path)) {
-        claimed.add(path);
-        paths.set(file.id, path);
-      }
-    }
-
-    if (unresolved.length === pending.length) break;
-    pending = unresolved;
-  }
-
-  return paths;
-}
-
-// Clears these paths from any other row, so a file recreated under the same name can
-// take the path of the one it replaces without tripping the unique path index.
-function releaseUrlPaths(
-  db: ReturnType<typeof makeDb>,
-  driveIdx: number,
-  paths: Map<string, string>,
-): BatchItem<"sqlite"> {
-  const claims = JSON.stringify([...paths].map(([id, path]) => ({ id, path })));
-
-  return db
-    .update(driveItems)
-    .set({ urlPath: null })
-    .where(
-      and(
-        eq(driveItems.driveIdx, driveIdx),
-        sql`exists (
-          select 1 from json_each(${claims}) j
-          where json_extract(j.value, '$.path') = ${driveItems.urlPath}
-            and json_extract(j.value, '$.id') != ${driveItems.id}
-        )`,
-      ),
-    );
+  parentId: string | null,
+  file: Pick<DriveFile, "id" | "name" | "mimeType" | "size" | "modifiedTime">,
+) {
+  return {
+    id: file.id,
+    driveIdx,
+    parentId,
+    name: file.name,
+    mimeType: file.mimeType,
+    size: file.size,
+    modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
+  };
 }
 
 // An init that has not stored a page token this long after it was queued is presumed lost.
@@ -200,7 +143,6 @@ export async function runIncrementalSync(
 
   await db.update(syncState).set({ status: "syncing" }).where(eq(syncState.driveIdx, driveIdx));
 
-  const rootId = getDrive(driveIdx, env)?.rootId;
   let pageToken = state.pageToken;
 
   try {
@@ -208,15 +150,6 @@ export async function runIncrementalSync(
       const result = await fetchChanges(driveIdx, pageToken, env);
       const statements: BatchItem<"sqlite">[] = [];
       const touchedIds: string[] = [];
-
-      const upserts = result.changes.flatMap((change) =>
-        !change.removed && !change.file?.trashed && change.file ? [change.file] : [],
-      );
-      const urlPaths = await resolveUrlPaths(db, driveIdx, rootId, upserts);
-
-      if (urlPaths.size > 0) {
-        statements.push(releaseUrlPaths(db, driveIdx, urlPaths));
-      }
 
       for (const change of result.changes) {
         if (change.removed || change.file?.trashed) {
@@ -234,38 +167,26 @@ export async function runIncrementalSync(
           continue;
         }
 
-        const file = change.file;
-        const modifiedTime = file.modifiedTime ? new Date(file.modifiedTime).getTime() : null;
-        const urlPath = urlPaths.get(file.id) ?? null;
+        const row = itemRow(driveIdx, change.file.parents?.[0] ?? null, change.file);
 
         statements.push(
           db
             .insert(driveItems)
-            .values({
-              id: file.id,
-              driveIdx,
-              parentId: file.parents?.[0] ?? null,
-              name: file.name,
-              mimeType: file.mimeType,
-              size: file.size,
-              modifiedTime,
-              urlPath,
-            })
+            .values(row)
             .onConflictDoUpdate({
               target: driveItems.id,
               set: {
-                parentId: file.parents?.[0] ?? null,
-                name: file.name,
-                mimeType: file.mimeType,
-                size: file.size,
-                modifiedTime,
-                // A file whose parent folder is not indexed keeps the path it had.
-                urlPath: sql`coalesce(${incoming(driveItems.urlPath)}, ${driveItems.urlPath})`,
+                parentId: row.parentId,
+                name: row.name,
+                mimeType: row.mimeType,
+                size: row.size,
+                modifiedTime: row.modifiedTime,
               },
+              setWhere: notOlderThanStored,
             }),
         );
 
-        touchedIds.push(file.id);
+        touchedIds.push(change.file.id);
       }
 
       if (statements.length > 0) {
@@ -315,64 +236,40 @@ async function invalidateKvForFile(
 export async function crawlFolder(
   driveIdx: number,
   folderId: string,
-  urlPath: string,
   env: CloudEnv["Bindings"],
 ): Promise<{
   fileCount: number;
-  folderIds: Array<{ id: string; path: string }>;
+  folderIds: string[];
 }> {
   const db = makeDb(env);
-  let pageToken: string | undefined;
-  let fileCount = 0;
-  const folderIds: Array<{ id: string; path: string }> = [];
+  const files = await listDirectory(driveIdx, folderId, env);
 
-  do {
-    const result = await listDirectory(driveIdx, folderId, env, pageToken);
+  await insertRows(
+    db,
+    files.map((file) => itemRow(driveIdx, folderId, file)),
+    (chunk) =>
+      db
+        .insert(driveItems)
+        .values(chunk)
+        .onConflictDoUpdate({
+          target: driveItems.id,
+          set: {
+            parentId: incoming(driveItems.parentId),
+            name: incoming(driveItems.name),
+            mimeType: incoming(driveItems.mimeType),
+            size: incoming(driveItems.size),
+            modifiedTime: incoming(driveItems.modifiedTime),
+          },
+          setWhere: notOlderThanStored,
+        }),
+  );
 
-    const rows = result.files.map((file) => ({
-      id: file.id,
-      driveIdx,
-      parentId: folderId,
-      name: file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
-      urlPath: itemUrlPath(urlPath, file),
-    }));
+  const folders = files.filter((file) => file.mimeType === FOLDER_MIME);
 
-    if (rows.length > 0) {
-      const statements = chunkRows(rows).map((chunk): BatchItem<"sqlite"> =>
-        db
-          .insert(driveItems)
-          .values(chunk)
-          .onConflictDoUpdate({
-            target: driveItems.id,
-            set: {
-              parentId: incoming(driveItems.parentId),
-              name: incoming(driveItems.name),
-              mimeType: incoming(driveItems.mimeType),
-              size: incoming(driveItems.size),
-              modifiedTime: incoming(driveItems.modifiedTime),
-              urlPath: incoming(driveItems.urlPath),
-            },
-          }),
-      );
-
-      await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
-    }
-
-    for (const file of result.files) {
-      if (file.mimeType === FOLDER_MIME) {
-        folderIds.push({ id: file.id, path: itemUrlPath(urlPath, file) });
-      } else {
-        fileCount++;
-      }
-    }
-
-    pageToken = result.nextPageToken;
-  } while (pageToken);
-
-  return { fileCount, folderIds };
+  return {
+    fileCount: files.length - folders.length,
+    folderIds: folders.map((folder) => folder.id),
+  };
 }
 
 export async function initializeSyncState(
@@ -406,14 +303,7 @@ export async function initializeSyncState(
 export async function backfillD1Items(
   driveIdx: number,
   parentId: string,
-  parentPath: string,
-  files: Array<{
-    id: string;
-    name: string;
-    mimeType: string;
-    size?: number;
-    modifiedTime?: string;
-  }>,
+  files: DriveFile[],
   env: CloudEnv["Bindings"],
 ): Promise<void> {
   if (files.length === 0) {
@@ -421,21 +311,11 @@ export async function backfillD1Items(
   }
 
   const db = makeDb(env);
+  const realParentId = await resolveFolderId(driveIdx, parentId, env);
 
-  const rows = files.map((file) => ({
-    id: file.id,
-    driveIdx,
-    parentId,
-    name: file.name,
-    mimeType: file.mimeType,
-    size: file.size,
-    modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
-    urlPath: itemUrlPath(parentPath, file),
-  }));
-
-  const statements = chunkRows(rows).map((chunk): BatchItem<"sqlite"> =>
-    db.insert(driveItems).values(chunk).onConflictDoNothing(),
+  await insertRows(
+    db,
+    files.map((file) => itemRow(driveIdx, realParentId, file)),
+    (chunk) => db.insert(driveItems).values(chunk).onConflictDoNothing(),
   );
-
-  await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
 }
