@@ -32,13 +32,14 @@ local URL. [Configuration](docs/configuration.md) explains each variable.
 - Viewers for video, audio, images, PDF, Markdown and highlighted code.
 - Google Docs, Sheets, Slides and Drawings download as `.docx`, `.xlsx`, `.pptx`
   and `.svg`.
-- Name search over metadata synced into D1. A cron job syncs every 15 minutes
-  and a Drive push webhook can sync on change.
-- Password-protected folders, unlocked with a 24 hour cookie.
-- Signed links for streaming and download that expire after one hour.
+- Name search over metadata synced into D1. A cron job syncs on a schedule and a
+  Drive push webhook can sync on change.
+- Password-protected folders, unlocked with a cookie.
+- Signed links for streaming and download that expire.
 
 ## Documentation
 
-- [Manual](docs/README.md): configuration, sync, folder passwords, deploying.
+- [Manual](docs/README.md): configuration, browsing, sync, folder passwords,
+  deploying.
 - [Contributing](docs/development.md): layout, checks and tests.
-- [Architecture](architecture.md): how the code is organized.
+- [Architecture](docs/architecture.md): how the code is organized.

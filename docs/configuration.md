@@ -4,12 +4,12 @@ The app reads four variables, declared in [env.ts](../env.ts). For local
 development put them in `.env`, the only dotenv file Void reads. For production
 see [Deploying](deploying.md).
 
-| Variable         | Required | Purpose                                           |
-| ---------------- | -------- | ------------------------------------------------- |
-| `DRIVES`         | yes      | JSON array of drives to serve.                    |
-| `STREAM_SECRET`  | yes      | HMAC key for stream and export links. 1 h expiry. |
-| `UNLOCK_SECRET`  | yes      | HMAC key for the folder-unlock cookie. 24 h.      |
-| `WEBHOOK_SECRET` | no       | Token Google sends to `/api/webhook/<index>`.     |
+| Variable         | Required | Purpose                                                                                     |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `DRIVES`         | yes      | JSON array of drives to serve.                                                              |
+| `STREAM_SECRET`  | yes      | HMAC key for stream and export links. See [signed links](folder-passwords.md#signed-links). |
+| `UNLOCK_SECRET`  | yes      | HMAC key for the folder-unlock cookie. See [unlock](folder-passwords.md#unlock).            |
+| `WEBHOOK_SECRET` | no       | Token Google sends to `/api/webhook/<index>`. See [webhook](sync.md#webhook).               |
 
 Generate each secret with `openssl rand -base64 32`. A `.env` looks like this:
 
@@ -89,14 +89,3 @@ different drive.
 
 If `DRIVES` is not valid JSON the app behaves as if no drive is configured and
 the home page says so.
-
-### Listing behavior
-
-- A shortcut appears as its target.
-- Files with the same name in one folder get their Drive file ID as a suffix,
-  `name (dupID: 1AbC)`, so each has its own URL. The plain name of such files is
-  not a URL: it answers 404.
-- A file named `.password` is not listed.
-- A folder is listed whole, every page, so a shared name is always found.
-- Folder listings are cached in KV for 5 minutes and file metadata for 1 hour. A
-  URL is resolved against the folder as it is, never from a cache.
