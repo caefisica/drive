@@ -1,18 +1,19 @@
 import type { CloudEnv } from "void";
-import { and, eq, getTableColumns, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, gt, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { drizzle } from "drizzle-orm/d1";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 
 import { queues } from "void/queues";
 
-import { driveItems, syncState } from "../../db/schema";
+import { driveItems, driveRemovals, syncState } from "../../db/schema";
 import { getDrive } from "../config";
 import {
   fetchChanges,
   getStartPageToken,
   listDirectory,
   FOLDER_MIME,
+  PASSWORD_FILE,
   resolveFolderId,
   type DriveFile,
 } from "../integrations/google-drive";
@@ -37,13 +38,16 @@ function chunkRows<T>(rows: T[]): T[][] {
 
 const ROWS_PER_BATCH = 100;
 
+// `last` runs after the inserts of every batch, in the same transaction.
 async function insertRows(
   db: ReturnType<typeof makeDb>,
   rows: Array<typeof driveItems.$inferInsert>,
   insert: (chunk: Array<typeof driveItems.$inferInsert>) => BatchItem<"sqlite">,
+  last?: BatchItem<"sqlite">,
 ): Promise<void> {
   for (let start = 0; start < rows.length; start += ROWS_PER_BATCH) {
     const statements = chunkRows(rows.slice(start, start + ROWS_PER_BATCH)).map(insert);
+    if (last) statements.push(last);
 
     await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
   }
@@ -88,6 +92,14 @@ function itemRow(
     modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
   };
 }
+
+// A removal outlives any crawl that could still write the file back: a crawl reads its listing
+// and writes it within one queue message.
+const REMOVAL_TTL_MS = 60 * 60 * 1000;
+
+// D1 binds at most 100 parameters, and a delete by ID also binds the drive, the parent and the
+// counter.
+const IDS_PER_DELETE = 90;
 
 // An init that has not stored a page token this long after it was queued is presumed lost.
 const INIT_STALE_MS = 60 * 60 * 1000;
@@ -162,13 +174,23 @@ export async function runIncrementalSync(
       const result = await fetchChanges(driveIdx, pageToken, env);
       const statements: BatchItem<"sqlite">[] = [];
       const touchedIds: string[] = [];
+      const now = Date.now();
 
       for (const change of result.changes) {
         if (change.removed || change.file?.trashed) {
+          const removal = { id: change.fileId, driveIdx, feedSeq: feedSeqOf(driveIdx) };
+
           statements.push(
             db
               .delete(driveItems)
               .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.id, change.fileId))),
+            db
+              .insert(driveRemovals)
+              .values({ ...removal, removedAt: now })
+              .onConflictDoUpdate({
+                target: driveRemovals.id,
+                set: { feedSeq: removal.feedSeq, removedAt: now },
+              }),
           );
 
           touchedIds.push(change.fileId);
@@ -178,6 +200,20 @@ export async function runIncrementalSync(
         if (!change.file) {
           continue;
         }
+
+        // A file renamed to the password name leaves the index, as listings hide it.
+        if (change.file.name === PASSWORD_FILE) {
+          statements.push(
+            db
+              .delete(driveItems)
+              .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.id, change.file.id))),
+          );
+
+          touchedIds.push(change.file.id);
+          continue;
+        }
+
+        statements.push(db.delete(driveRemovals).where(eq(driveRemovals.id, change.file.id)));
 
         const row = {
           ...itemRow(driveIdx, change.file.parents?.[0] ?? null, change.file),
@@ -210,6 +246,16 @@ export async function runIncrementalSync(
             .update(syncState)
             .set({ feedSeq: sql`${syncState.feedSeq} + 1` })
             .where(eq(syncState.driveIdx, driveIdx)),
+        );
+        statements.push(
+          db
+            .delete(driveRemovals)
+            .where(
+              and(
+                eq(driveRemovals.driveIdx, driveIdx),
+                lt(driveRemovals.removedAt, now - REMOVAL_TTL_MS),
+              ),
+            ),
         );
 
         await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
@@ -255,6 +301,36 @@ async function invalidateKvForFile(
   await env.KV.delete(`meta:${driveIdx}:${fileId}`);
 }
 
+// Deletes the rows of a folder that its listing lacks. A row the feed stamped after the counter was
+// read stays: the listing may be older than that change, and the feed is ahead of it.
+async function deleteAbsent(
+  db: ReturnType<typeof makeDb>,
+  driveIdx: number,
+  folderId: string,
+  listed: DriveFile[],
+  feedSeq: number,
+): Promise<void> {
+  const present = new Set(listed.map((file) => file.id));
+  const rows = await db
+    .select({ id: driveItems.id })
+    .from(driveItems)
+    .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.parentId, folderId)));
+  const absent = rows.map((row) => row.id).filter((id) => !present.has(id));
+
+  for (let start = 0; start < absent.length; start += IDS_PER_DELETE) {
+    await db
+      .delete(driveItems)
+      .where(
+        and(
+          eq(driveItems.driveIdx, driveIdx),
+          eq(driveItems.parentId, folderId),
+          inArray(driveItems.id, absent.slice(start, start + IDS_PER_DELETE)),
+          or(isNull(driveItems.feedSeq), lte(driveItems.feedSeq, feedSeq)),
+        ),
+      );
+  }
+}
+
 export async function crawlFolder(
   driveIdx: number,
   folderId: string,
@@ -286,7 +362,22 @@ export async function crawlFolder(
           },
           setWhere: sql`${driveItems.feedSeq} is null or ${driveItems.feedSeq} <= ${feedSeq}`,
         }),
+    // A file the feed removed after the counter was read may still be in the listing.
+    db.delete(driveItems).where(
+      and(
+        eq(driveItems.driveIdx, driveIdx),
+        inArray(
+          driveItems.id,
+          db
+            .select({ id: driveRemovals.id })
+            .from(driveRemovals)
+            .where(and(eq(driveRemovals.driveIdx, driveIdx), gt(driveRemovals.feedSeq, feedSeq))),
+        ),
+      ),
+    ),
   );
+
+  await deleteAbsent(db, driveIdx, folderId, files, feedSeq);
 
   const folders = files.filter((file) => file.mimeType === FOLDER_MIME);
 

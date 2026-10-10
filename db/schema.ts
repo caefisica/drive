@@ -15,6 +15,19 @@ export const driveItems = sqliteTable(
   (t) => [index("idx_di_siblings").on(t.driveIdx, t.parentId, t.name)],
 );
 
+// A file the change feed removed, kept briefly so that a crawl listing read before the removal
+// cannot write the file back. `feedSeq` is the number of the batch that removed it.
+export const driveRemovals = sqliteTable(
+  "drive_removals",
+  {
+    id: text("id").primaryKey(),
+    driveIdx: integer("drive_idx").notNull(),
+    feedSeq: integer("feed_seq").notNull(),
+    removedAt: integer("removed_at").notNull(),
+  },
+  (t) => [index("idx_dr_drive_seq").on(t.driveIdx, t.feedSeq)],
+);
+
 export const syncState = sqliteTable("sync_state", {
   driveIdx: integer("drive_idx").primaryKey(),
   pageToken: text("page_token"),
