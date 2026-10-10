@@ -1,6 +1,0 @@
-{
-  // The KV namespace `vp dev` serves locally: Void names its id "local".
-  "name": "drive-scripts",
-  "compatibility_date": "2026-08-30",
-  "kv_namespaces": [{ "binding": "KV", "id": "local" }],
-}

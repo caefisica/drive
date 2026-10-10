@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudEnv } from "void";
-import { getPlatformProxy } from "wrangler";
 
 import { getDrive, isDriveIdx, parseDriveIdx } from "../src/config";
 import { hashPassword } from "../src/services/crypto";
@@ -131,30 +131,69 @@ export async function storePassword(options: StorePasswordOptions): Promise<Stor
     return { key, location: `remote namespace ${remote.namespaceId}` };
   }
 
-  await putLocal(key, hash, resolve(projectRoot, options.persistTo ?? ".void"));
+  putLocal(key, hash, resolve(projectRoot, options.persistTo ?? ".void"));
   return { key, location: "local KV" };
 }
 
-// The local KV that `vp dev` serves lives under <persist directory>/v3.
-async function putLocal(key: string, hash: string, persistDir: string) {
-  const proxy = await getPlatformProxy({
-    configPath: join(projectRoot, "scripts/wrangler.jsonc"),
-    persist: { path: join(persistDir, "v3") },
-  });
+/**
+ * The id of the KV namespace `vp dev` serves. Void takes it from void.lock.json and names it
+ * "local" only when the lockfile does not exist or holds no KV namespace. A lockfile that cannot be
+ * read or parsed throws, because writing under the wrong id would store a password nothing reads.
+ */
+function localKvNamespaceId(): string {
+  let text: string;
 
   try {
-    await (proxy.env as unknown as { KV: KVNamespace }).KV.put(key, hash);
-  } finally {
-    await proxy.dispose();
+    text = readFileSync(join(projectRoot, "void.lock.json"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "local";
+    throw new Error(`could not read void.lock.json: ${(error as Error).message}`);
   }
+
+  let lock: { resolved?: { kv_namespaces?: Array<{ binding: string; id: string }> } };
+
+  try {
+    lock = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`void.lock.json is not valid JSON: ${(error as Error).message}`);
+  }
+
+  return lock.resolved?.kv_namespaces?.find((kv) => kv.binding === "KV")?.id ?? "local";
+}
+
+// The local KV that `vp dev` serves lives under <persist directory>/v3.
+function putLocal(key: string, hash: string, persistDir: string) {
+  runWrangler(
+    key,
+    [
+      "kv",
+      "key",
+      "put",
+      key,
+      hash,
+      "--namespace-id",
+      localKvNamespaceId(),
+      "--local",
+      "--persist-to",
+      persistDir,
+    ],
+    "ignore",
+  );
 }
 
 function putRemote(key: string, hash: string, namespaceId: string) {
-  const wrangler = spawnSync(
-    join(projectRoot, "node_modules/.bin/wrangler"),
+  runWrangler(
+    key,
     ["kv", "key", "put", key, hash, "--namespace-id", namespaceId, "--remote"],
-    { cwd: projectRoot, stdio: ["ignore", "inherit", "inherit"] },
+    "inherit",
   );
+}
+
+function runWrangler(key: string, args: string[], stdout: "inherit" | "ignore") {
+  const wrangler = spawnSync(join(projectRoot, "node_modules/.bin/wrangler"), args, {
+    cwd: projectRoot,
+    stdio: ["ignore", stdout, "inherit"],
+  });
 
   if (wrangler.status !== 0) {
     throw new Error(`wrangler could not store ${key}`);
