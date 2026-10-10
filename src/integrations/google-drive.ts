@@ -17,6 +17,9 @@ export type DriveFile = {
 
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
+// The file that holds a folder's password. Listings, lookups, the index and search all skip it.
+export const PASSWORD_FILE = ".password";
+
 // A file of a folder listing, with the name its URL uses.
 export type ListedFile = DriveFile & { urlName: string };
 
@@ -133,7 +136,7 @@ export async function listDirectory(
   const files = withUrlNames(
     await listAll(
       driveIdx,
-      `'${folderId}' in parents and name != '.password' and trashed = false`,
+      `'${folderId}' in parents and name != '${PASSWORD_FILE}' and trashed = false`,
       "id,name,mimeType,size,modifiedTime,shortcutDetails",
       env,
       "folder,name,modifiedTime desc",
@@ -173,6 +176,9 @@ export async function resolveSegment(
   env: CloudEnv["Bindings"],
 ): Promise<string | null> {
   const { name, id } = parseUrlName(segment);
+  // Listings hide the password file, so no URL names it.
+  if (name === PASSWORD_FILE) return null;
+
   const quoted = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   const found = await listAll(
     driveIdx,
@@ -293,7 +299,7 @@ export const WORKSPACE_EXTENSION: Record<string, string> = {
 };
 
 export function isWorkspaceFile(mimeType: string): boolean {
-  return mimeType.startsWith("application/vnd.google-apps.");
+  return Object.hasOwn(WORKSPACE_EXPORT, mimeType);
 }
 
 export type FileKind =

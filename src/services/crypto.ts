@@ -27,6 +27,18 @@ async function hmacVerify(message: string, signature: string, secret: string): P
   return crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(message));
 }
 
+// Compares by MACing `expected` under a throwaway key and letting `verify`, which takes the same
+// time whatever the bytes, check `given` against it. Neither the content nor the length leaks.
+export async function secretsEqual(given: string, expected: string): Promise<boolean> {
+  const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(expected));
+
+  return crypto.subtle.verify("HMAC", key, mac, enc.encode(given));
+}
+
 export async function signStreamToken(
   fileId: string,
   driveIdx: number,
@@ -100,5 +112,5 @@ export async function verifyPassword(password: string, storedHash: string): Prom
   if (parts.length !== 3 || parts[0] !== "pbkdf2") return false;
   const [, salt] = parts;
   const computed = await hashPassword(password, salt);
-  return computed === storedHash;
+  return secretsEqual(computed, storedHash);
 }

@@ -1,9 +1,10 @@
-import { and, eq, notInArray, sql } from "drizzle-orm";
+import { and, eq, ne, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { defineHandler } from "void";
 
 import { driveItems } from "../../db/schema";
-import { getDrives } from "../../src/config";
+import { getDrives, parseDriveIdx } from "../../src/config";
+import { PASSWORD_FILE } from "../../src/integrations/google-drive";
 import { getUnlockedFolders, listClosedFolders } from "../../src/services/folder-access";
 import { itemUrls } from "../../src/services/item-urls";
 
@@ -18,11 +19,13 @@ export const GET = defineHandler(async (c) => {
   let driveIdx: number | undefined;
 
   if (driveIdxParam !== undefined) {
-    if (!/^\d+$/.test(driveIdxParam)) {
+    const parsed = parseDriveIdx(driveIdxParam);
+
+    if (parsed === null) {
       return c.json({ error: "d must be a non-negative integer" }, 400);
     }
 
-    driveIdx = Number(driveIdxParam);
+    driveIdx = parsed;
   }
 
   const drives = getDrives(c.env);
@@ -38,7 +41,7 @@ export const GET = defineHandler(async (c) => {
   );
   const closedDrives = closed.filter(({ d, f }) => f === drives[d]?.rootId).map(({ d }) => d);
 
-  const filters = [matchesName];
+  const filters = [matchesName, ne(driveItems.name, PASSWORD_FILE)];
 
   if (driveIdx !== undefined) {
     filters.push(eq(driveItems.driveIdx, driveIdx));

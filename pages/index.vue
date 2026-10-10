@@ -3,13 +3,21 @@ import { Link } from "@void/vue";
 import type { Props } from "./index.server";
 import FileGrid from "../src/components/FileGrid.vue";
 import BreadcrumbNav from "../src/components/BreadcrumbNav.vue";
+import PasswordGate from "../src/components/PasswordGate.vue";
 
 const props = defineProps<Props>();
 </script>
 
 <template>
+  <PasswordGate
+    v-if="props.type === 'locked'"
+    :drive-idx="props.driveIdx"
+    :folder-id="props.folderId"
+    :return-path="props.path"
+  />
+
   <div
-    v-if="props.type === 'no-config'"
+    v-else-if="props.type === 'no-config'"
     class="flex flex-col items-center justify-center py-24 gap-4 text-center"
   >
     <span class="i-lucide:settings w-12 h-12 text-fg-subtle" aria-hidden="true" />
