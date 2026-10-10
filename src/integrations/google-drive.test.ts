@@ -222,6 +222,15 @@ describe("folder listings and lookups", () => {
       expect(await resolveSegment(0, "root", "x.txt", env)).toBe("c");
     });
 
+    it.each([".password", ".password (dupID: p)"])(
+      "finds nothing for %s, the file listings hide",
+      async (segment) => {
+        fake.put(file("p", ".password", ROOT));
+
+        expect(await resolveSegment(0, "root", segment, env)).toBeNull();
+      },
+    );
+
     it("finds nothing for a name the folder does not hold", async () => {
       fake.put(file("a", "a.txt", ROOT));
 

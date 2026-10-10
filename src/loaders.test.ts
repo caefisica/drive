@@ -65,7 +65,12 @@ const children: Record<string, Array<{ id: string; name: string; mimeType: strin
     { id: "docs", name: "docs", mimeType: FOLDER },
     { id: "vault", name: "vault", mimeType: FOLDER },
   ],
-  docs: [{ id: "readme", name: "readme.txt", mimeType: "text/plain" }],
+  docs: [
+    { id: "readme", name: "readme.txt", mimeType: "text/plain" },
+    { id: "notes", name: "notes", mimeType: "application/vnd.google-apps.document" },
+    { id: "survey", name: "survey", mimeType: "application/vnd.google-apps.form" },
+    { id: "secret", name: ".password", mimeType: "text/plain" },
+  ],
 };
 
 let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
@@ -100,7 +105,10 @@ function stubGoogle() {
       const q = url.searchParams.get("q") ?? "";
       const parent = /^'([^']+)' in parents/.exec(q)?.[1] ?? "";
       const name = /name = '([^']+)'/.exec(q)?.[1];
-      const files = (children[parent] ?? []).filter((child) => !name || child.name === name);
+      const hidesPassword = q.includes("name != '.password'");
+      const files = (children[parent] ?? [])
+        .filter((child) => !name || child.name === name)
+        .filter((child) => !hidesPassword || child.name !== ".password");
 
       return Response.json({ files });
     }),
@@ -220,6 +228,66 @@ describe("page loaders", () => {
     expect(props.type).toBe("file");
     expectOnlyPublicDrives(props);
     expectNoSecrets(props);
+  });
+
+  it("show the password form on the home page when the first drive's root is locked", async () => {
+    await kv.put("passwd:0:root", "pbkdf2:salt:hash");
+
+    const props = await (await render(indexApp, "/")).json<Record<string, unknown>>();
+
+    expect(props).toMatchObject({ type: "locked", driveIdx: 0, folderId: "root" });
+    expect(props).not.toHaveProperty("items");
+    expectOnlyPublicDrives(props);
+    expectNoSecrets(props);
+  });
+
+  it("list the home page once the first drive's root is unlocked", async () => {
+    await kv.put("passwd:0:root", "pbkdf2:salt:hash");
+    const cookie = await signUnlockCookie([{ d: 0, f: "root" }], UNLOCK_SECRET);
+
+    const response = await render(indexApp, "/", `drive_unlock=${encodeURIComponent(cookie)}`);
+
+    expect(await response.json()).toMatchObject({ type: "directory", driveIdx: 0 });
+  });
+
+  it("lock a folder page under a locked drive root", async () => {
+    await kv.put("passwd:0:root", "pbkdf2:salt:hash");
+
+    const props = await (await render(pathApp, "/0/docs/")).json<Record<string, unknown>>();
+
+    expect(props).toMatchObject({ type: "locked", folderId: "root" });
+  });
+
+  it.each(["/01/", "/1abc/", "/0x1/", "/-0/", "/+0/", "/ 0/", "/0.0/"])(
+    "answer 404 for %s, which is not a drive index",
+    async (path) => {
+      const response = await render(pathApp, path);
+
+      expect(response.status).toBe(404);
+    },
+  );
+
+  it("answer 404 for a drive index that is not configured", async () => {
+    expect((await render(pathApp, "/2/")).status).toBe(404);
+  });
+
+  it.each(["/0/docs/.password", "/0/docs/.password%20(dupID:%20secret)"])(
+    "answer 404 for %s, the file listings hide",
+    async (path) => {
+      const response = await render(pathApp, path);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not found" });
+    },
+  );
+
+  it("offer an export for a Docs file and none for a Form", async () => {
+    const doc = await (await render(pathApp, "/0/docs/notes")).json<Record<string, unknown>>();
+    const form = await (await render(pathApp, "/0/docs/survey")).json<Record<string, unknown>>();
+
+    expect(doc).toMatchObject({ type: "file", exportExt: ".docx" });
+    expect(doc.exportUrl).toMatch(/^\/api\/export\/notes\?d=0&t=/);
+    expect(form).toMatchObject({ type: "file", exportUrl: null, exportExt: "" });
   });
 
   it("send only the public drive fields on the password form", async () => {

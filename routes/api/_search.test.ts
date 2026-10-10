@@ -43,7 +43,7 @@ const drive = {
   refreshToken: "r",
 };
 
-async function search(q: string, options: { unlocked?: string[]; drive?: number } = {}) {
+async function search(q: string, options: { unlocked?: string[]; drive?: number | string } = {}) {
   const headers: Record<string, string> = {};
 
   if (options.unlocked) {
@@ -157,6 +157,24 @@ describe("GET /api/search", () => {
 
     expect(html).toContain(">a\\b</a>");
     expect(html).not.toContain(">abc</a>");
+  });
+
+  it("never lists a file named .password", async () => {
+    await drizzle(d1).insert(driveItems).values({
+      id: "pw",
+      driveIdx: 0,
+      name: ".password",
+      parentId: "root",
+      mimeType: "text/plain",
+    });
+
+    expect(await search("pass")).not.toContain(">.password</a>");
+  });
+
+  it("answers 400 to a drive index that is not in canonical form", async () => {
+    expect(await search("abc", { drive: "01" })).toContain("d must be a non-negative integer");
+    expect(await search("abc", { drive: "1abc" })).toContain("d must be a non-negative integer");
+    expect(await search("abc", { drive: "0" })).toContain(">abc</a>");
   });
 
   describe("result links", () => {

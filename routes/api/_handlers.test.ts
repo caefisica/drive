@@ -21,12 +21,15 @@ let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let app: Hono<CloudEnv>;
 let upstream: ReturnType<typeof vi.fn>;
 
-function request(path: string, init?: RequestInit) {
+const WEBHOOK_SECRET = "test-webhook-secret";
+
+function request(path: string, init?: RequestInit, webhookSecret?: string) {
   const env = {
     DRIVES: JSON.stringify([drive, drive]),
     KV: (proxy.env as unknown as { KV: KVNamespace }).KV,
     STREAM_SECRET,
     UNLOCK_SECRET,
+    WEBHOOK_SECRET: webhookSecret,
   };
 
   return app.request(path, init, env);
@@ -38,8 +41,10 @@ beforeAll(async () => {
   const stream = await import("./stream/[fileId]");
   const exported = await import("./export/[fileId]");
   const unlock = await import("./unlock");
+  const webhook = await import("./webhook/[driveIdx]");
 
   app = new Hono<CloudEnv>()
+    .post("/api/webhook/:driveIdx", async (c) => (await webhook.POST(c)) as Response)
     .get("/api/stream/:fileId", async (c) => (await stream.GET(c)) as Response)
     .get("/api/export/:fileId", async (c) => (await exported.GET(c)) as Response)
     .post("/api/unlock", async (c) => (await unlock.POST(c)) as Response);
@@ -112,6 +117,40 @@ describe("GET /api/stream/:fileId", () => {
 
     expect(response.status).toBe(403);
   });
+});
+
+describe("POST /api/webhook/:driveIdx", () => {
+  function notify(path: string, token: string | null, secret = WEBHOOK_SECRET) {
+    const headers: Record<string, string> = token === null ? {} : { "x-goog-channel-token": token };
+
+    return request(path, { method: "POST", headers }, secret);
+  }
+
+  it.each([
+    ["is missing", null],
+    ["is empty", ""],
+    ["is wrong", "test-webhook-secreT"],
+    ["is a prefix of the secret", "test-webhook"],
+    ["extends the secret", `${WEBHOOK_SECRET}x`],
+  ])("answers 403 when the channel token %s", async (_, token) => {
+    expect((await notify("/api/webhook/0", token)).status).toBe(403);
+  });
+
+  it("answers 403 to everyone while WEBHOOK_SECRET is unset", async () => {
+    expect((await notify("/api/webhook/0", "", "")).status).toBe(403);
+    const unset = await request("/api/webhook/0", {
+      method: "POST",
+      headers: { "x-goog-channel-token": "anything" },
+    });
+    expect(unset.status).toBe(403);
+  });
+
+  it.each(["abc", "1x", "01", "1.5", "-1", "%20"])(
+    "answers 400 when the drive index is %s",
+    async (idx) => {
+      expect((await notify(`/api/webhook/${idx}`, WEBHOOK_SECRET)).status).toBe(400);
+    },
+  );
 });
 
 describe("POST /api/unlock", () => {

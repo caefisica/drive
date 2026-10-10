@@ -3,9 +3,9 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
 
 import { verifyPassword } from "../src/services/crypto";
+import { readDevKv } from "./test-support";
 
 const drives = JSON.stringify([{ name: "my", kind: "my_drive", rootId: "root" }]);
 
@@ -33,16 +33,8 @@ describe("set-password CLI", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("KV key:  passwd:0:root\nStored in local KV.\n");
 
-    const proxy = await getPlatformProxy({
-      configPath: "scripts/wrangler.jsonc",
-      persist: { path: join(persistDir, "v3") },
-    });
-    try {
-      const hash = await (proxy.env as unknown as { KV: KVNamespace }).KV.get("passwd:0:root");
-      expect(await verifyPassword("secret", hash!)).toBe(true);
-    } finally {
-      await proxy.dispose();
-    }
+    const hash = await readDevKv(persistDir, "passwd:0:root");
+    expect(await verifyPassword("secret", hash!)).toBe(true);
   });
 
   it("exits 1 with the reason when the drive is not configured", () => {

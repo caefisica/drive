@@ -2,10 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
 
 import { verifyPassword } from "../src/services/crypto";
 import { optionsFromArgs, storePassword, type StorePasswordOptions } from "./store-password";
+import { DEV_KV_ID, readDevKv, readLocalKv } from "./test-support";
 
 const drives = JSON.stringify([
   { name: "my", kind: "my_drive", rootId: "root" },
@@ -32,20 +32,12 @@ function store(options: Partial<StorePasswordOptions> = {}) {
   });
 }
 
-async function storedHash(key: string): Promise<string | null> {
-  const proxy = await getPlatformProxy({
-    configPath: "scripts/wrangler.jsonc",
-    persist: { path: join(persistDir, "v3") },
-  });
-
-  try {
-    return await (proxy.env as unknown as { KV: KVNamespace }).KV.get(key);
-  } finally {
-    await proxy.dispose();
-  }
+function storedHash(key: string): Promise<string | null> {
+  return readDevKv(persistDir, key);
 }
 
-describe("storePassword", () => {
+// Each write and read starts Wrangler, which takes seconds.
+describe("storePassword", { timeout: 30_000 }, () => {
   it("stores a hash of the password under the drive's configured root id", async () => {
     const stored = await store({ driveIdx: 1 });
 
@@ -55,6 +47,15 @@ describe("storePassword", () => {
     expect(hash).not.toBeNull();
     expect(await verifyPassword("secret", hash!)).toBe(true);
     expect(await verifyPassword("wrong", hash!)).toBe(false);
+  });
+
+  it("writes the KV namespace that void.lock.json names, which is the one vp dev serves", async () => {
+    expect(DEV_KV_ID).not.toBe("local");
+
+    const { key } = await store();
+
+    expect(await storedHash(key)).toMatch(/^pbkdf2:/);
+    expect(readLocalKv(persistDir, "local", key)).toBeNull();
   });
 
   it("uses root for a drive whose root id is root", async () => {

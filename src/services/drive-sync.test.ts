@@ -13,7 +13,7 @@ import {
 } from "vite-plus/test";
 import { getPlatformProxy } from "wrangler";
 
-import { driveItems, syncState } from "../../db/schema";
+import { driveItems, driveRemovals, syncState } from "../../db/schema";
 import type * as GoogleDrive from "../integrations/google-drive";
 import type { DriveChange, DriveChangesResult, ListedFile } from "../integrations/google-drive";
 import {
@@ -146,6 +146,7 @@ afterAll(async () => {
 beforeEach(async () => {
   const db = drizzle(env.DB);
   await db.delete(driveItems);
+  await db.delete(driveRemovals);
   await db.delete(syncState);
   await db.insert(syncState).values({ driveIdx: 0, pageToken: "start", status: "idle" });
   vi.mocked(fetchChanges).mockReset();
@@ -176,8 +177,9 @@ describe("runIncrementalSync", () => {
 
     await runIncrementalSync(0, env);
 
-    // Each batch also takes the next number of the drive's feed counter.
-    expect(batchSizes).toEqual([4, 2]);
+    // Each batch also takes the next number of the drive's feed counter, and each file it writes
+    // clears or records a removal.
+    expect(batchSizes).toEqual([8, 4]);
 
     const ids = (await db.select().from(driveItems)).map((row) => row.id).sort();
     expect(ids).toEqual(["a", "b", "c"]);
@@ -216,6 +218,21 @@ describe("runIncrementalSync", () => {
     ]);
   });
 
+  it("does not index a password file, and drops a row renamed to that name", async () => {
+    await drizzle(env.DB)
+      .insert(driveItems)
+      .values({ id: "f", driveIdx: 0, parentId: "root", name: "a.txt", mimeType: "text/plain" });
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page([change("f", ".password", "root"), change("g", ".password", "root")], {
+        newStartPageToken: "next",
+      }),
+    );
+
+    await runIncrementalSync(0, withDrives(1));
+
+    expect(await drizzle(env.DB).select().from(driveItems)).toEqual([]);
+  });
+
   it("holds two files of one name in one folder, each under its own ID", async () => {
     vi.mocked(fetchChanges).mockResolvedValueOnce(
       page([change("a", "dup.txt", "root"), change("b", "dup.txt", "root")], {
@@ -230,6 +247,23 @@ describe("runIncrementalSync", () => {
       "a:dup.txt",
       "b:dup.txt",
     ]);
+  });
+
+  it("forgets removals older than an hour and keeps newer ones", async () => {
+    const db = drizzle(env.DB);
+    const hour = 60 * 60 * 1000;
+    await db.insert(driveRemovals).values([
+      { id: "stale", driveIdx: 0, feedSeq: 1, removedAt: Date.now() - hour - 1000 },
+      { id: "recent", driveIdx: 0, feedSeq: 1, removedAt: Date.now() - hour + 60_000 },
+    ]);
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page([{ fileId: "new", removed: true }], { newStartPageToken: "next" }),
+    );
+
+    await runIncrementalSync(0, withDrives(1));
+
+    const ids = (await db.select().from(driveRemovals)).map((r) => r.id).sort();
+    expect(ids).toEqual(["new", "recent"]);
   });
 
   it("applies nothing from a page when one of its writes fails", async () => {
@@ -455,7 +489,8 @@ describe("crawlFolder", () => {
     const result = await crawlFolder(0, "root", env);
 
     expect(result.fileCount).toBe(200);
-    expect(batchSizes).toEqual([9, 9]);
+    // Each batch ends with the statement that drops files the feed removed.
+    expect(batchSizes).toEqual([10, 10]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(200);
   });
 
@@ -511,6 +546,129 @@ describe("crawlFolder", () => {
         feedSeq: null,
       },
     ]);
+  });
+
+  describe("files the listing no longer holds", () => {
+    const row = (id: string, parentId: string) => ({
+      id,
+      driveIdx: 0,
+      parentId,
+      name: `${id}.txt`,
+      mimeType: "text/plain",
+    });
+    const idsOf = async () =>
+      (await drizzle(env.DB).select().from(driveItems)).map((r) => r.id).sort();
+
+    it("removes the folder's rows that the listing lacks, and no other folder's", async () => {
+      await drizzle(env.DB)
+        .insert(driveItems)
+        .values([row("kept", "dir"), row("gone", "dir"), row("elsewhere", "other")]);
+      vi.mocked(listDirectory).mockResolvedValueOnce([listed("kept", "kept.txt")]);
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["elsewhere", "kept"]);
+    });
+
+    it("empties a folder whose listing is empty", async () => {
+      await drizzle(env.DB)
+        .insert(driveItems)
+        .values([row("a", "dir"), row("b", "dir")]);
+      vi.mocked(listDirectory).mockResolvedValueOnce([]);
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual([]);
+    });
+
+    it("removes more rows than one statement can bind", async () => {
+      await backfillD1Items(
+        0,
+        "dir",
+        Array.from({ length: 250 }, (_, i) => listed(`f${i}`, `f${i}.txt`)),
+        env,
+      );
+      vi.mocked(listDirectory).mockResolvedValueOnce([listed("f0", "f0.txt")]);
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["f0"]);
+    });
+
+    it("keeps a row the feed wrote after the listing was read", async () => {
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read: ListedFile[] = [];
+        vi.mocked(fetchChanges).mockResolvedValueOnce(
+          page([change("late", "late.txt", "dir")], { newStartPageToken: "next" }),
+        );
+        await runIncrementalSync(0, withDrives(1));
+        return read;
+      });
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["late"]);
+    });
+
+    it("does not write back a file the feed removed after the listing was read", async () => {
+      await drizzle(env.DB).insert(driveItems).values(row("doomed", "dir"));
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read = [listed("doomed", "doomed.txt"), listed("stays", "stays.txt")];
+        vi.mocked(fetchChanges).mockResolvedValueOnce(
+          page([{ fileId: "doomed", removed: true }], { newStartPageToken: "next" }),
+        );
+        await runIncrementalSync(0, withDrives(1));
+        return read;
+      });
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["stays"]);
+    });
+
+    it("does not write back a file the feed removed when it was never indexed", async () => {
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read = [listed("doomed", "doomed.txt")];
+        vi.mocked(fetchChanges).mockResolvedValueOnce(
+          page([{ fileId: "doomed", removed: true }], { newStartPageToken: "next" }),
+        );
+        await runIncrementalSync(0, withDrives(1));
+        return read;
+      });
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual([]);
+    });
+
+    it("writes a file the feed removed and then restored", async () => {
+      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+        const read = [listed("back", "back.txt")];
+        vi.mocked(fetchChanges)
+          .mockResolvedValueOnce(page([{ fileId: "back", removed: true }], { nextPageToken: "p2" }))
+          .mockResolvedValueOnce(
+            page([change("back", "back.txt", "dir")], { newStartPageToken: "next" }),
+          );
+        await runIncrementalSync(0, withDrives(1));
+        return read;
+      });
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["back"]);
+    });
+
+    it("writes a file the feed removed before the counter was read", async () => {
+      vi.mocked(fetchChanges).mockResolvedValueOnce(
+        page([{ fileId: "old", removed: true }], { newStartPageToken: "next" }),
+      );
+      await runIncrementalSync(0, withDrives(1));
+      vi.mocked(listDirectory).mockResolvedValueOnce([listed("old", "old.txt")]);
+
+      await crawlFolder(0, "dir", env);
+
+      expect(await idsOf()).toEqual(["old"]);
+    });
   });
 
   describe("against the change feed", () => {
