@@ -82,8 +82,9 @@ scope such as `https://www.googleapis.com/auth/drive.readonly`.
 
 A drive's position in the array is its index. URLs (`/0/…`), the `d` parameter
 of the API routes, the webhook path, and the rows in D1 and KV all use that
-index. `/api/stream` and `/api/export` answer 400 unless `d` is a plain
-non-negative integer, with no sign, leading zero or fraction. Append new drives.
+index. Pages, `/api/stream`, `/api/export` and the webhook accept only a plain
+non-negative integer, with no sign, leading zero or fraction. A page URL with
+another form is not found, and the API routes answer 400. Append new drives.
 Reordering or removing one points existing URLs, rows and passwords at a
 different drive.
 

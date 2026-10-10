@@ -1,7 +1,7 @@
 # Folder passwords
 
-A folder or drive root can require a password. A visitor who opens its page,
-or a page under it, sees a password form. A correct password sets a cookie that
+A folder or drive root can require a password. A visitor who opens its page, or
+a page under it, sees a password form. A correct password sets a cookie that
 unlocks that folder for 24 hours.
 
 ## Set a password
@@ -22,7 +22,9 @@ bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --passwor
 ```
 
 Without `--remote` the script writes a local KV directory, `.void` unless
-`--persist-to` names another:
+`--persist-to` names another. It writes to the namespace id in
+[void.lock.json](../void.lock.json), the one `vp dev` serves, or to `local` when
+the lockfile holds no namespace:
 
 ```sh
 bun scripts/set-password.ts --drive 0 --password secret123
@@ -61,7 +63,8 @@ vp exec wrangler kv key delete --namespace-id <id> --remote "passwd:0:root"
 
 [pages/[...path].server.ts](../pages/[...path].server.ts) returns the password
 form for the first locked folder on the path that the visitor has not unlocked.
-The form posts to `POST /api/unlock`
+[pages/index.server.ts](../pages/index.server.ts) does the same for `/` when the
+root of drive 0 is locked. The form posts to `POST /api/unlock`
 ([routes/api/unlock.ts](../routes/api/unlock.ts)):
 
 ```json

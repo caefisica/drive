@@ -16,7 +16,7 @@ A folder page lists the folder's files in the order Drive returns for
 
 - A shortcut appears as its target.
 - Trashed files do not appear.
-- A file named `.password` does not appear.
+- A file named `.password` does not appear, and no URL reaches it.
 - The whole folder is listed, every page of Google's answer, so a name shared by
   two files is always noticed.
 - Listings are cached in KV. Resolving a URL to a file is not. See
@@ -58,7 +58,9 @@ an HTML page of links.
 - It searches the index in D1, so a file shows up after [sync](sync.md) has seen
   it.
 - It returns at most 50 results, in no set order.
-- `d=<drive index>` limits it to one drive.
+- `d=<drive index>` limits it to one drive. A `d` that is not a plain
+  non-negative integer answers 400.
+- A file named `.password` never appears.
 - Without `q` it answers 400.
 - A result links to the file through every folder name on the way, in the
   suffixed form of [duplicate names](#duplicate-names).

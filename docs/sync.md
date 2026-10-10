@@ -12,8 +12,9 @@ describes its columns and statuses.
 | Crawl queue | A message on the `crawl` queue | Rows for every folder of a drive.       |
 | Incremental | Cron, or a Drive webhook       | Files that changed since the last sync. |
 
-The rows hold no URL. See [what the index stores](architecture.md#what-the-index-stores).
-The paths may run concurrently. The [concurrency rule](architecture.md#concurrency-rule)
+The rows hold no URL. See
+[what the index stores](architecture.md#what-the-index-stores). The paths may
+run concurrently. The [concurrency rule](architecture.md#concurrency-rule)
 describes how they avoid conflicting writes.
 
 A new drive needs no setup. The first cron tick or webhook for it queues a crawl
@@ -70,9 +71,10 @@ that fail.
 
 `POST /api/webhook/<driveIdx>` calls `syncDrive` right away
 ([routes/api/webhook/[driveIdx].ts](../routes/api/webhook/[driveIdx].ts)). It
-answers 403 unless the `X-Goog-Channel-Token` header equals `WEBHOOK_SECRET`, so
-the route is off while that variable is unset. It answers 400 when the drive
-index is not a number. Otherwise it answers 200 and syncs after the response.
+answers 403 unless the `X-Goog-Channel-Token` header equals `WEBHOOK_SECRET`,
+compared in constant time, so the route is off while that variable is unset. It
+answers 400 when the drive index is not a plain non-negative integer. Otherwise
+it answers 200 and syncs after the response.
 
 The app does not register the watch. Register it once per drive with the Drive
 API, using an access token for that drive. `token` must equal `WEBHOOK_SECRET`:

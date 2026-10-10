@@ -25,7 +25,7 @@ queue ── queues/crawl.ts ──────┘
 | `src/test-support/fake-drive.ts`      | An in-memory Google Drive for tests: listing, lookup and the change feed, with renames, moves and request delays.                                                                                                                                                                       |
 | `src/services/crypto.ts`              | HMAC signing of stream tokens and unlock cookies, PBKDF2 passwords.                                                                                                                                                                                                                     |
 | `src/services/folder-access.ts`       | The `passwd:` key, the unlock cookie, and the lock checks shared by the page loader, `/api/unlock` and search.                                                                                                                                                                          |
-| `src/services/drive-sync.ts`          | Writes `drive_items` and `sync_state`: `syncDrive`, incremental sync, folder crawl, browse backfill.                                                                                                                                                                                    |
+| `src/services/drive-sync.ts`          | Writes `drive_items`, `drive_removals` and `sync_state`: `syncDrive`, incremental sync, folder crawl, browse backfill.                                                                                                                                                                  |
 | `db/schema.ts`, `db/migrations/`      | The D1 schema and its migrations.                                                                                                                                                                                                                                                       |
 | `pages/index.*`, `pages/[...path].*`  | Home and every `/<drive>/<path>` URL. The `.server.ts` loader resolves the path, checks passwords, and returns a directory or file view.                                                                                                                                                |
 | `pages/layout.vue`, `src/components/` | Page chrome, search box, and the viewers.                                                                                                                                                                                                                                               |
@@ -83,10 +83,10 @@ the moment that folder's row changes.
 ### Concurrency rule
 
 Four writers touch `drive_items`: the cron, the webhook, the crawl queue and the
-backfill after browsing a folder. Each writes every row as a function of one
-file, takes nothing from any other row, and computes no URL. Whichever order
-they interleave in, no two files get the same URL name and no file gets another
-file's URL.
+backfill after browsing a folder. Each inserts or updates a row as a function of
+one file, takes nothing from any other row, and computes no URL. Only the feed
+and the crawl delete rows, as set out below. Whichever order they interleave in,
+no two files get the same URL name and no file gets another file's URL.
 
 The change feed always replaces the row it writes. Drive has no version that a
 move bumps, and a move leaves the modified time as it was, so the order of
@@ -100,6 +100,18 @@ that a row refused is not lost: any change newer than it is still ahead in the
 feed, which is read from a token taken before the crawl. The crawl lists with
 `fresh`, because a cached listing may predate the read of `feed_seq`. The
 backfill only inserts, so it never replaces a row.
+
+A crawl of a folder deletes two sets of rows of its drive:
+
+- Rows whose parent is the crawled folder and whose ID the listing lacks, unless
+  the feed stamped the row after the counter was read.
+- Rows, in any folder, that `drive_removals` holds with a batch number above the
+  counter it read. The feed records each file it removes there for one hour, so
+  a stale listing cannot write a deleted file back. A later change to the file
+  clears its record.
+
+The feed also deletes a row whose file is now named `.password`, and writes no
+row for such a file, because listings and search hide it.
 
 Browsing never reads the index, so a folder page is exact at the moment it
 lists.
@@ -188,8 +200,8 @@ stale.
   `src/integrations/google-drive.ts`. The stream and export routes and the page
   loader's text preview fetch file content from Drive themselves, with a token
   from `getAccessToken`.
-- Only `src/services/drive-sync.ts` writes `drive_items`, and only each file's
-  own fields. `routes/api/search.ts` only reads it.
+- Only `src/services/drive-sync.ts` writes `drive_items`. It inserts and updates
+  only each file's own fields. `routes/api/search.ts` only reads it.
 - Signing, verifying and password hashing live in `src/services/crypto.ts`.
 - D1 batches stay under D1's 100 bound parameters per statement:
   `src/services/drive-sync.ts` splits multi-row inserts by column count.
