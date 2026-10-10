@@ -1,7 +1,7 @@
 # Folder passwords
 
-A folder, or a drive root, can require a password. A visitor who opens it, or
-anything under it, sees a password form. A correct password sets a cookie that
+A folder or drive root can require a password. A visitor who opens its page,
+or a page under it, sees a password form. A correct password sets a cookie that
 unlocks that folder for 24 hours.
 
 ## Set a password
@@ -11,18 +11,21 @@ PBKDF2 and stores the hash in KV. It reads `DRIVES` from `.env`, which Bun
 loads, and exits when the drive is not in it. The logic is in
 [scripts/store-password.ts](../scripts/store-password.ts).
 
-Locally, it writes the KV that `vp dev` serves, in `.void`:
-
-```sh
-bun scripts/set-password.ts --drive 0 --password secret123
-bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123
-```
-
-For a deployed app, add `--remote` and the id of the production `KV` namespace.
-The script then runs `wrangler kv key put` for you:
+Set a password on a deployed app with `--remote` and the id of the production
+`KV` namespace. The id is `resolved.kv_namespaces[0].id` in
+[void.lock.json](../void.lock.json). The script runs `wrangler kv key put` for
+you, so Wrangler must be signed in to the Cloudflare account:
 
 ```sh
 bun scripts/set-password.ts --drive 0 --password secret123 --remote --namespace-id <id>
+bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --password secret123 --remote --namespace-id <id>
+```
+
+Without `--remote` the script writes a local KV directory, `.void` unless
+`--persist-to` names another:
+
+```sh
+bun scripts/set-password.ts --drive 0 --password secret123
 ```
 
 ```text
@@ -51,7 +54,7 @@ configured as `root` uses the key `passwd:<drive index>:root`.
 Delete the key to remove the password:
 
 ```sh
-wrangler kv key delete --binding KV --local --persist-to .void "passwd:0:root"
+vp exec wrangler kv key delete --namespace-id <id> --remote "passwd:0:root"
 ```
 
 ## Unlock
@@ -65,25 +68,26 @@ The form posts to `POST /api/unlock`
 { "driveIdx": 0, "folderId": "root", "password": "secret123" }
 ```
 
-| Status | Meaning                                      |
-| ------ | -------------------------------------------- |
-| 200    | Correct. Sets the `drive_unlock` cookie.     |
-| 400    | The body is not JSON, or a field is missing. |
-| 401    | Wrong password.                              |
-| 404    | No password is set for that folder.          |
+| Status | Meaning                                                                  |
+| ------ | ------------------------------------------------------------------------ |
+| 200    | Correct. Sets the `drive_unlock` cookie.                                 |
+| 400    | The body is not JSON, or a field is missing or empty, or the wrong type. |
+| 401    | Wrong password.                                                          |
+| 404    | No password is set for that folder.                                      |
 
 The cookie is signed with `UNLOCK_SECRET`, is `HttpOnly` and `SameSite=Lax`, and
-lists every folder the visitor has unlocked. Rotating `UNLOCK_SECRET` locks
-everything again.
+lists every folder the visitor has unlocked. It expires 24 hours after the
+latest unlock, and that expiry covers every folder it lists. Rotating
+`UNLOCK_SECRET` locks everything again.
 
 ## Search
 
-`/api/search` leaves out everything below a folder the visitor has not unlocked,
-using the folder's `passwd:` key in KV and the cookie. The locked folder's own
-name still appears. A drive whose root is locked returns no results. Unlocking a
-folder brings its contents back into the visitor's results.
+[Search](browsing.md#search) leaves out everything below a folder the visitor
+has not unlocked, using the folder's `passwd:` key in KV and the cookie. The
+locked folder's own name still appears. A drive whose root is locked returns no
+results. Unlocking a folder brings its contents back into the visitor's results.
 
 ## Signed links
 
-Stream and export links are signed for one hour. A link issued after unlocking
-works for that hour without the cookie.
+Stream and export links are signed with `STREAM_SECRET` and expire after one
+hour. A link issued after unlocking works for that hour without the cookie.

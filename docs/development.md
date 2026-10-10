@@ -8,6 +8,9 @@ bun install           # also runs `vp config`, which installs the git hook
 vp dev
 ```
 
+Bun is not pinned in `mise.toml`. Install the version `package.json` names in
+`packageManager`.
+
 `.env` needs `DRIVES`, `STREAM_SECRET` and `UNLOCK_SECRET`. Void reads no other
 dotenv file. See [Configuration](configuration.md). `vp dev` applies the D1
 migrations to a local database and serves on the port it prints.
@@ -24,7 +27,7 @@ migrations to a local database and serves on the port it prints.
 | `db/`      | Drizzle schema and SQL migrations.                                  |
 | `scripts/` | Operator scripts run with Bun.                                      |
 
-[architecture.md](../architecture.md) describes how they fit together.
+[Architecture](architecture.md) describes how they fit together.
 
 ## Checks
 
@@ -39,18 +42,15 @@ vp test run     # vitest
 The pre-commit hook runs `vp staged`, which runs `vp check --fix` on staged
 files ([vite.config.ts](../vite.config.ts)).
 
-The tests in
-[src/services/drive-sync.test.ts](../src/services/drive-sync.test.ts) and
-[routes/api/_search.test.ts](../routes/api/_search.test.ts) run against a local
-D1 database with the migrations applied. The sync tests mock the Drive client
-and the queue. [src/index-urls.test.ts](../src/index-urls.test.ts) runs the
-crawl consumer, the cron, the webhook, the page loaders and search together
-against [src/test-support/fake-drive.ts](../src/test-support/fake-drive.ts), an
-in-memory Drive, with the writers interleaved. The
-[scripts/store-password.test.ts](../scripts/store-password.test.ts) tests call
-the password logic against a temporary local KV, and
+Tests sit next to the code as `*.test.ts`. Files in `routes/` start with `_` so
+Void does not serve them as routes. Most run against a local D1 database and KV
+that Wrangler provides, with the migrations applied. The Drive is either mocked
+or the in-memory [fake Drive](../src/test-support/fake-drive.ts).
+[src/index-urls.test.ts](../src/index-urls.test.ts) runs the crawl consumer, the
+cron, the webhook, the page loaders and search together against the fake Drive,
+with the writers interleaved.
 [scripts/set-password.test.ts](../scripts/set-password.test.ts) runs the script
-itself with Bun.
+itself, so `bun` must be on the `PATH`.
 
 ## Database changes
 

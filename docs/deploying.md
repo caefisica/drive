@@ -1,14 +1,17 @@
 # Deploying
 
 The app deploys to your own Cloudflare account with the Void CLI, which
-[package.json](../package.json) wraps in one script:
+[package.json](../package.json) wraps in scripts:
 
-| Script                | Runs          | Does                                                                       |
-| --------------------- | ------------- | -------------------------------------------------------------------------- |
-| `bun run release:app` | `void deploy` | Builds, creates missing resources, applies migrations, deploys the Worker. |
+| Script                      | Runs                       | Does                                                                       |
+| --------------------------- | -------------------------- | -------------------------------------------------------------------------- |
+| `bun run release:app`       | `void deploy`              | Builds, creates missing resources, applies migrations, deploys the Worker. |
+| `bun run db:migrate`        | `void db migrate`          | Applies pending migrations to the local database.                          |
+| `bun run db:migrate:remote` | `void db migrate --remote` | Applies pending migrations to the production database without a deploy.    |
 
-A change to [db/schema.ts](../db/schema.ts) needs a new migration from
-`vp exec void db generate` before the deploy.
+A change to [db/schema.ts](../db/schema.ts) needs a
+[new migration](development.md#database-changes) before the deploy.
+`void deploy` stops when the schema has changes without one.
 
 ## First deploy
 
