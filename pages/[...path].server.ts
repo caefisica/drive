@@ -3,7 +3,7 @@ import type { InferProps } from "void";
 import MarkdownIt from "markdown-it";
 import { codeToHtml } from "shiki";
 
-import { getDrives, summarizeDrive } from "../src/config";
+import { getDrives, parseDriveIdx, summarizeDrive } from "../src/config";
 import {
   getAccessToken,
   getFileKind,
@@ -29,9 +29,9 @@ function parsePath(
     return null;
   }
 
-  const driveIdx = parseInt(parts[0], 10);
+  const driveIdx = parseDriveIdx(parts[0]);
 
-  if (isNaN(driveIdx)) {
+  if (driveIdx === null) {
     return null;
   }
 
