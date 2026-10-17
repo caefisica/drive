@@ -1,13 +1,13 @@
 # Deploying
 
 The app deploys to your own Cloudflare account with the Void CLI, which
-[package.json](../package.json) wraps in scripts:
+[mise.toml](../mise.toml) wraps in tasks:
 
-| Script                      | Runs                       | Does                                                                       |
-| --------------------------- | -------------------------- | -------------------------------------------------------------------------- |
-| `bun run release:app`       | `void deploy`              | Builds, creates missing resources, applies migrations, deploys the Worker. |
-| `bun run db:migrate`        | `void db migrate`          | Applies pending migrations to the local database.                          |
-| `bun run db:migrate:remote` | `void db migrate --remote` | Applies pending migrations to the production database without a deploy.    |
+| Task                         | Runs                       | Does                                                                       |
+| ---------------------------- | -------------------------- | -------------------------------------------------------------------------- |
+| `mise run release:app`       | `void deploy`              | Builds, creates missing resources, applies migrations, deploys the Worker. |
+| `mise run db:migrate`        | `void db migrate`          | Applies pending migrations to the local database.                          |
+| `mise run db:migrate:remote` | `void db migrate --remote` | Applies pending migrations to the production database without a deploy.    |
 
 A change to [db/schema.ts](../db/schema.ts) needs a
 [new migration](development.md#database-changes) before the deploy.
@@ -18,24 +18,24 @@ A change to [db/schema.ts](../db/schema.ts) needs a
 1. Choose Cloudflare as the destination and sign in. A browser window opens:
 
    ```sh
-   vp exec void connect --platform cloudflare
+   mise run release:connect
    ```
 
 2. Set the production secrets. `DRIVES` holds OAuth credentials, so it is a
    secret like the rest. Each command reads the value from stdin:
 
    ```sh
-   vp exec void secret put DRIVES
-   vp exec void secret put STREAM_SECRET
-   vp exec void secret put UNLOCK_SECRET
-   vp exec void secret put WEBHOOK_SECRET   # optional
+   mise run release:secret DRIVES
+   mise run release:secret STREAM_SECRET
+   mise run release:secret UNLOCK_SECRET
+   mise run release:secret WEBHOOK_SECRET   # optional
    ```
 
    See [Configuration](configuration.md) for what each variable holds. Void
    never uploads the local `.env`. The first `void deploy` stops and lists the
    required secrets that are still unset, so you can also run it first.
 
-3. Run `bun run release:app`, then commit the `void.lock.json` it writes. The
+3. Run `mise run release:app`, then commit the `void.lock.json` it writes. The
    app is served at `https://drive.<your workers.dev subdomain>.workers.dev`.
 
 In CI, or any shell without a browser, set `CLOUDFLARE_API_TOKEN` (and

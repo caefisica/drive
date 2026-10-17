@@ -3,17 +3,14 @@
 ## Setup
 
 ```sh
-mise install          # installs the vp version pinned in mise.toml
-bun install           # also runs `vp config`, which installs the git hook
-vp dev
+mise install          # installs the pinned Bun and Node versions
+mise run install      # runs `vp config`, which installs the git hook
+mise run dev
 ```
 
-Bun is not pinned in `mise.toml`. Install the version `package.json` names in
-`packageManager`.
-
 `.env` needs `DRIVES`, `STREAM_SECRET` and `UNLOCK_SECRET`. Void reads no other
-dotenv file. See [Configuration](configuration.md). `vp dev` applies the D1
-migrations to a local database and serves on the port it prints.
+dotenv file. See [Configuration](configuration.md). `mise run dev` applies the
+D1 migrations to a local database and serves on the port it prints.
 
 ## Layout
 
@@ -32,12 +29,13 @@ migrations to a local database and serves on the port it prints.
 ## Checks
 
 ```sh
-vp check        # format, lint and type-check
-vp test run     # vitest
+mise run check  # lint, typecheck, test and build; writes no tracked file
+mise run fix    # apply safe lint fixes and format every file
 ```
 
-`vp check` type-checks against `.void/tsconfig.json`, which Void generates. Run
-`vp dev` or `vp build` once in a fresh clone before the first check.
+`check` runs `lint`, `typecheck`, `test` and `build`, each also a task of its
+own. They depend on `build`, which generates the `.void/tsconfig.json` that
+type-checking reads, so a fresh clone needs no extra step.
 
 The pre-commit hook runs `vp staged`, which runs `vp check --fix` on staged
 files ([vite.config.ts](../vite.config.ts)).
@@ -57,16 +55,16 @@ itself, so `bun` must be on the `PATH`.
 Edit [db/schema.ts](../db/schema.ts), then generate a migration:
 
 ```sh
-vp exec void db generate
+mise run db:generate
 ```
 
 Commit the new SQL file and its `meta` snapshot with the schema change.
 
 ## Documentation
 
-`vp check` formats Markdown at 80 columns with prose wrapped, from the `fmt`
+`mise run lint` checks Markdown at 80 columns with prose wrapped, from the `fmt`
 override in [vite.config.ts](../vite.config.ts). Rewrite the files with:
 
 ```sh
-vp check --fix
+mise run fix
 ```

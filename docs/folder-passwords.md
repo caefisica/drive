@@ -23,8 +23,8 @@ bun scripts/set-password.ts --drive 0 --folder-id 1BxiMVs0XRA5nFMdKvBd --passwor
 
 Without `--remote` the script writes a local KV directory, `.void` unless
 `--persist-to` names another. It writes to the namespace id in
-[void.lock.json](../void.lock.json), the one `vp dev` serves, or to `local` when
-the lockfile holds no namespace:
+[void.lock.json](../void.lock.json), the one `mise run dev` serves, or to
+`local` when the lockfile holds no namespace:
 
 ```sh
 bun scripts/set-password.ts --drive 0 --password secret123
@@ -56,7 +56,7 @@ configured as `root` uses the key `passwd:<drive index>:root`.
 Delete the key to remove the password:
 
 ```sh
-vp exec wrangler kv key delete --namespace-id <id> --remote "passwd:0:root"
+mise exec -- wrangler kv key delete --namespace-id <id> --remote "passwd:0:root"
 ```
 
 ## Unlock

@@ -17,13 +17,15 @@ audio seek. Search finds files by name across all drives.
 ## Run it
 
 ```sh
-bun install
-vp dev                       # needs .env with DRIVES and the two secrets
+mise install
+mise run install
+mise run dev                 # needs .env with DRIVES and the two secrets
 ```
 
-`vp` is Vite+; `mise install` provides the version pinned in
-[mise.toml](mise.toml). The dev server applies the D1 migrations and prints its
-local URL. [Configuration](docs/configuration.md) explains each variable.
+`mise install` provides the Bun and Node versions pinned in
+[mise.toml](mise.toml); Vite+ (`vp`) comes from `node_modules`. The dev server
+applies the D1 migrations and prints its local URL.
+[Configuration](docs/configuration.md) explains each variable.
 
 ## Features
 
