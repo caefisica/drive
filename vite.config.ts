@@ -8,6 +8,9 @@ export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
+  fmt: {
+    overrides: [{ files: ["**/*.md"], options: { printWidth: 80, proseWrap: "always" } }],
+  },
   lint: {
     options: {
       typeAware: true,
