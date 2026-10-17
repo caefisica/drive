@@ -9,5 +9,4 @@ Code map: [architecture.md](docs/architecture.md). Workflows:
 - A schema change in `db/schema.ts` ships with a migration from
   `vp exec void db generate`.
 - Never commit `.env` or real Google credentials.
-- Format Markdown with
-  `bunx prettier --print-width 80 --prose-wrap always --write '**/*.md'`.
+- `vp check --fix` formats Markdown at 80 columns, wrapped.

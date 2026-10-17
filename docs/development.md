@@ -64,8 +64,9 @@ Commit the new SQL file and its `meta` snapshot with the schema change.
 
 ## Documentation
 
-Format Markdown with Prettier at 80 columns:
+`vp check` formats Markdown at 80 columns with prose wrapped, from the `fmt`
+override in [vite.config.ts](../vite.config.ts). Rewrite the files with:
 
 ```sh
-bunx prettier --print-width 80 --prose-wrap always --write '**/*.md'
+vp check --fix
 ```
