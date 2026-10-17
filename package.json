@@ -1,13 +1,6 @@
 {
   "type": "module",
   "scripts": {
-    "dev": "vp dev",
-    "build": "vp build",
-    "preview": "vp preview",
-    "check": "vp check",
-    "db:migrate": "vp exec void db migrate",
-    "db:migrate:remote": "vp exec void db migrate --remote",
-    "release:app": "vp exec void deploy",
     "postinstall": "vp config"
   },
   "dependencies": {

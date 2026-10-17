@@ -1,2 +1,76 @@
 [tools]
-vp = "0.3.3"
+bun = "1.4.0"
+node = "24.22.0"
+
+[settings]
+# The suite is slow enough that other tasks running beside it make tests time out.
+jobs = 1
+
+[env]
+_.path = ["node_modules/.bin"]
+
+[tasks.install]
+description = "Install dependencies from bun.lock without resolving"
+run = "bun install --frozen-lockfile"
+
+# Void generates .void/ while building.
+[tasks.build]
+description = "Build the Worker and the client assets"
+run = "vp build"
+
+[tasks.lint]
+description = "Lint and check formatting, Markdown included"
+depends = ["build"]
+run = ["vp lint --deny-warnings", "vp fmt --check"]
+
+[tasks.fix]
+description = "Apply safe lint fixes and format every file"
+depends = ["build"]
+run = ["vp lint --fix", "vp fmt"]
+
+[tasks.typecheck]
+description = "Type-check with the TypeScript diagnostics in oxlint"
+depends = ["build"]
+run = "vp check --no-fmt --no-lint"
+
+[tasks.test]
+description = "Run the vitest suite against local D1 and KV"
+depends = ["build"]
+run = "vp test run"
+
+[tasks.check]
+description = "Run lint, typecheck, test and build without writing tracked files"
+depends = ["lint", "typecheck", "test", "build"]
+
+[tasks.dev]
+description = "Serve the app locally"
+run = "vp dev"
+
+[tasks.preview]
+description = "Preview the production build locally"
+run = "vp preview"
+
+[tasks."db:migrate"]
+description = "Apply pending migrations to the local database"
+run = "vp exec void db migrate"
+
+[tasks."db:migrate:remote"]
+description = "Apply pending migrations to the production database"
+run = "vp exec void db migrate --remote"
+
+[tasks."db:generate"]
+description = "Generate a migration from db/schema.ts"
+run = "vp exec void db generate"
+
+[tasks."release:connect"]
+description = "Connect the project to a Cloudflare account"
+run = "vp exec void connect --platform cloudflare"
+
+[tasks."release:secret"]
+description = "Store a production secret, for example DRIVES"
+usage = 'arg "<name>" help="Secret name"'
+run = 'vp exec void secret put "$usage_name"'
+
+[tasks."release:app"]
+description = "Build, apply migrations and deploy the Worker"
+run = "vp exec void deploy"
