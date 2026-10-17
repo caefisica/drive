@@ -41,8 +41,6 @@ export default defineQueue<CrawlMessage>(async (batch, env) => {
       }
 
       msg.ack();
-    } else {
-      msg.ack();
     }
   }
 });

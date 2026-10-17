@@ -20,7 +20,6 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
 // The file that holds a folder's password. Listings, lookups, the index and search all skip it.
 export const PASSWORD_FILE = ".password";
 
-// A file of a folder listing, with the name its URL uses.
 export type ListedFile = DriveFile & { urlName: string };
 
 export type DriveChange = {
@@ -69,7 +68,6 @@ export async function getAccessToken(driveIdx: number, env: CloudEnv["Bindings"]
   return access_token;
 }
 
-// Materialize a shortcut as its target to keep downstream handling uniform.
 function followShortcut(file: DriveFile): DriveFile {
   if (file.mimeType !== "application/vnd.google-apps.shortcut" || !file.shortcutDetails) {
     return file;
@@ -82,7 +80,6 @@ function followShortcut(file: DriveFile): DriveFile {
   };
 }
 
-// Reads every page of a files.list query, so the caller sees all the files a folder holds.
 async function listAll(
   driveIdx: number,
   query: string,
@@ -205,7 +202,7 @@ export async function resolvePath(
   const drive = getDrive(driveIdx, env);
   if (!drive) return null;
 
-  let currentId = drive.rootId === "root" ? "root" : drive.rootId;
+  let currentId = drive.rootId;
   const ids: string[] = [currentId];
 
   for (const segment of segments) {
