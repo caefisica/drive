@@ -58,11 +58,6 @@ function incoming(column: SQLiteColumn) {
   return sql.raw(`excluded."${column.name}"`);
 }
 
-// Drive keeps no version that a move bumps, so the order of writes is local. Every batch of the
-// change feed takes the next number of its drive's counter and stamps the rows it writes with it.
-// A crawl reads the counter before it lists, so it may replace a row only if the feed stamped the
-// row no later than that read. A listing read before a change therefore cannot undo it, however
-// late it is written, and the feed always replaces. A move needs no modified time to win.
 function feedSeqOf(driveIdx: number) {
   return sql<number>`(select ${syncState.feedSeq} from ${syncState} where ${syncState.driveIdx} = ${driveIdx})`;
 }
@@ -104,7 +99,6 @@ const IDS_PER_DELETE = 90;
 // An init that has not stored a page token this long after it was queued is presumed lost.
 const INIT_STALE_MS = 60 * 60 * 1000;
 
-// Claim the init only when no fresh claim exists, so concurrent callers queue it once.
 async function claimInit(driveIdx: number, env: CloudEnv["Bindings"]): Promise<boolean> {
   const now = Date.now();
   const claimed = await makeDb(env)

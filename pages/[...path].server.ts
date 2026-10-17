@@ -135,7 +135,6 @@ export const loader = defineHandler(async (c) => {
       kind: getFileKind(file.mimeType),
     }));
 
-    // Persist crawl results without delaying the directory response.
     c.executionCtx.waitUntil(backfillD1Items(driveIdx, finalId, files, c.env));
 
     return {

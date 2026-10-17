@@ -18,9 +18,8 @@ type ChainRow = {
   driveIdx: number;
 };
 
-// Derive each indexed file's URL from its own name and parent and the files on the way to the
-// drive root. A file whose chain does not reach the root, or whose root ID cannot be resolved,
-// links to the drive itself.
+// A file whose chain does not reach the root, or whose root ID cannot be resolved, links to the
+// drive itself.
 //
 // Whether a name is shared depends on every file of its folder, and the index may lack a twin that
 // Drive holds. A plain name chosen from the index would then 404 where the folder is listed live.

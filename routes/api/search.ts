@@ -32,7 +32,6 @@ export const GET = defineHandler(async (c) => {
   const pattern = `%${escapeLike(q)}%`;
   const matchesName = sql`${driveItems.name} like ${pattern} escape '\\'`;
 
-  // Hide descendants of locked folders unless the unlock cookie names each locked ancestor.
   const unlocked = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
   const closed = await listClosedFolders(
     driveIdx === undefined ? drives.map((d) => d.idx) : [driveIdx],

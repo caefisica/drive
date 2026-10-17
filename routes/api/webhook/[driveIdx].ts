@@ -3,7 +3,6 @@ import { parseDriveIdx } from "../../../src/config";
 import { secretsEqual } from "../../../src/services/crypto";
 import { syncDrive } from "../../../src/services/drive-sync";
 
-// This endpoint receives Drive Changes notifications after manual watch registration.
 export const POST = defineHandler(async (c) => {
   const channelToken = c.req.header("x-goog-channel-token") ?? "";
   if (!c.env.WEBHOOK_SECRET || !(await secretsEqual(channelToken, c.env.WEBHOOK_SECRET))) {
