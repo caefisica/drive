@@ -7,7 +7,7 @@ defineProps<{
   basePath: string;
 }>();
 
-const ICONS: Record<FileKind | "default", string> = {
+const ICONS: Record<FileKind, string> = {
   folder: "i-lucide:folder",
   video: "i-lucide:video",
   audio: "i-lucide:music",
@@ -18,12 +18,7 @@ const ICONS: Record<FileKind | "default", string> = {
   document: "i-lucide:file-spreadsheet",
   archive: "i-lucide:archive",
   other: "i-lucide:file",
-  default: "i-lucide:file",
 };
-
-function iconFor(kind: FileKind): string {
-  return ICONS[kind] ?? ICONS.default;
-}
 
 function hrefFor(item: ListedFile & { kind: FileKind }, basePath: string): string {
   const encoded = encodeURIComponent(item.urlName);
@@ -63,7 +58,7 @@ function formatDate(iso?: string): string {
       class="table-body-row"
     >
       <span
-        :class="[iconFor(item.kind), item.kind === 'folder' ? 'text-accent' : 'text-fg-subtle']"
+        :class="[ICONS[item.kind], item.kind === 'folder' ? 'text-accent' : 'text-fg-subtle']"
         class="w-4 h-4 shrink-0"
         aria-hidden="true"
       />
