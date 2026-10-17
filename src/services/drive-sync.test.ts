@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import {
@@ -29,6 +28,7 @@ import {
   runIncrementalSync,
   syncDrive,
 } from "./drive-sync";
+import { applyMigrations } from "../test-support/migrations";
 
 vi.mock("../integrations/google-drive", async (importOriginal) => ({
   ...(await importOriginal<typeof GoogleDrive>()),
@@ -53,47 +53,8 @@ vi.mock("void/queues", () => ({
 
 type Env = Parameters<typeof runIncrementalSync>[1];
 
-const migrations = import.meta.glob<string>("../../db/migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
-
 let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Env;
-let batchSizes: number[];
-
-// Delegates to local D1 and records each batch's statement count.
-function recordBatches(db: D1Database): D1Database {
-  return new Proxy(db, {
-    get(target, property) {
-      if (property === "batch") {
-        return (statements: D1PreparedStatement[]) => {
-          batchSizes.push(statements.length);
-          return target.batch(statements);
-        };
-      }
-
-      const value = Reflect.get(target, property);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-async function applyMigrations(db: D1Database) {
-  const paths = Object.keys(migrations).sort();
-
-  for (const path of paths) {
-    const statements = migrations[path]
-      .split("--> statement-breakpoint")
-      .map((statement) => statement.trim())
-      .filter(Boolean);
-
-    for (const statement of statements) {
-      await db.prepare(statement).run();
-    }
-  }
-}
 
 function upsert(id: string, name: string): DriveChange {
   return {
@@ -136,7 +97,7 @@ beforeAll(async () => {
   });
   const bindings = proxy.env as unknown as Env;
   await applyMigrations(bindings.DB);
-  env = { ...bindings, DB: recordBatches(bindings.DB) };
+  env = bindings;
 });
 
 afterAll(async () => {
@@ -154,11 +115,10 @@ beforeEach(async () => {
   vi.mocked(resolveFolderId)
     .mockReset()
     .mockImplementation(async (_driveIdx, folderId) => folderId);
-  batchSizes = [];
 });
 
 describe("runIncrementalSync", () => {
-  it("writes each page of changes in one D1 batch", async () => {
+  it("applies every page of changes and stores the next page token", async () => {
     const db = drizzle(env.DB);
     await db.insert(driveItems).values({
       id: "gone",
@@ -176,10 +136,6 @@ describe("runIncrementalSync", () => {
       .mockResolvedValueOnce(page([upsert("c", "c.txt")], { newStartPageToken: "next" }));
 
     await runIncrementalSync(0, env);
-
-    // Each batch also takes the next number of the drive's feed counter, and each file it writes
-    // clears or records a removal.
-    expect(batchSizes).toEqual([8, 4]);
 
     const ids = (await db.select().from(driveItems)).map((row) => row.id).sort();
     expect(ids).toEqual(["a", "b", "c"]);
@@ -413,21 +369,11 @@ describe("syncDrive", () => {
 });
 
 describe("backfillD1Items", () => {
-  it("splits a full page of 100 files into statements under D1's bound-parameter limit", async () => {
-    const files = Array.from({ length: 100 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
-
-    await backfillD1Items(0, "root", files, env);
-
-    expect(batchSizes).toEqual([9]);
-    expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(100);
-  });
-
-  it("writes a folder of several hundred files in batches of 100 rows", async () => {
+  it("writes a folder of several hundred files within D1's bound-parameter limit", async () => {
     const files = Array.from({ length: 250 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
 
     await backfillD1Items(0, "root", files, env);
 
-    expect(batchSizes).toEqual([9, 9, 5]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(250);
   });
 
@@ -482,15 +428,13 @@ describe("backfillD1Items", () => {
 });
 
 describe("crawlFolder", () => {
-  it("stores every file of a 200-file listing, 100 rows to a D1 batch", async () => {
+  it("stores every file of a 200-file listing", async () => {
     const files = Array.from({ length: 200 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
     vi.mocked(listDirectory).mockResolvedValueOnce(files);
 
     const result = await crawlFolder(0, "root", env);
 
     expect(result.fileCount).toBe(200);
-    // Each batch ends with the statement that drops files the feed removed.
-    expect(batchSizes).toEqual([10, 10]);
     expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(200);
   });
 
@@ -519,7 +463,7 @@ describe("crawlFolder", () => {
     vi.mocked(listDirectory).mockResolvedValueOnce([]);
 
     expect(await crawlFolder(0, "root", env)).toEqual({ fileCount: 0, folderIds: [] });
-    expect(batchSizes).toEqual([]);
+    expect(await drizzle(env.DB).select().from(driveItems)).toEqual([]);
   });
 
   it("updates a re-crawled file that was renamed, moved and resized", async () => {

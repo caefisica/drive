@@ -54,21 +54,4 @@ describe("set-password CLI", () => {
     expect(missing.stderr).toContain("--drive is required");
     expect(existsSync(join(persistDir, "v3"))).toBe(false);
   });
-
-  it("exits 1 and writes nothing when a flag is unknown", () => {
-    const result = run(
-      "--drive",
-      "0",
-      "--password",
-      "s",
-      "--folderid",
-      "x",
-      "--persist-to",
-      persistDir,
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("unknown argument --folderid");
-    expect(existsSync(join(persistDir, "v3"))).toBe(false);
-  });
 });

@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
@@ -8,30 +7,12 @@ import { getPlatformProxy } from "wrangler";
 
 import { driveItems } from "../../db/schema";
 import { signUnlockCookie } from "../../src/services/crypto";
-
-const migrations = import.meta.glob<string>("../../db/migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
+import { applyMigrations } from "../../src/test-support/migrations";
 
 let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let d1: D1Database;
 let kv: KVNamespace;
 let app: Hono<CloudEnv>;
-
-async function applyMigrations(db: D1Database) {
-  for (const path of Object.keys(migrations).sort()) {
-    const statements = migrations[path]
-      .split("--> statement-breakpoint")
-      .map((statement) => statement.trim())
-      .filter(Boolean);
-
-    for (const statement of statements) {
-      await db.prepare(statement).run();
-    }
-  }
-}
 
 const UNLOCK_SECRET = "test-unlock-secret";
 
@@ -138,25 +119,15 @@ async function seedTree() {
 const sfx = (id: string) => `%20(dupID%3A%20${id})`;
 
 describe("GET /api/search", () => {
-  it("treats % in the query as a literal character", async () => {
-    const html = await search("50%");
+  it.each([
+    { char: "%", query: "50%", hit: "50%", miss: "500" },
+    { char: "_", query: "a_b", hit: "a_b", miss: "axb" },
+    { char: "a backslash", query: "a\\b", hit: "a\\b", miss: "abc" },
+  ])("treats $char in the query as a literal character", async ({ query, hit, miss }) => {
+    const html = await search(query);
 
-    expect(html).toContain(">50%</a>");
-    expect(html).not.toContain(">500</a>");
-  });
-
-  it("treats _ in the query as a literal character", async () => {
-    const html = await search("a_b");
-
-    expect(html).toContain(">a_b</a>");
-    expect(html).not.toContain(">axb</a>");
-  });
-
-  it("treats a backslash in the query as a literal character", async () => {
-    const html = await search("a\\b");
-
-    expect(html).toContain(">a\\b</a>");
-    expect(html).not.toContain(">abc</a>");
+    expect(html).toContain(`>${hit}</a>`);
+    expect(html).not.toContain(`>${miss}</a>`);
   });
 
   it("never lists a file named .password", async () => {

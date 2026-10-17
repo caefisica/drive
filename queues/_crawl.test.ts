@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import { drizzle } from "drizzle-orm/d1";
 import {
   afterAll,
@@ -15,6 +14,7 @@ import { getPlatformProxy } from "wrangler";
 import { driveItems, syncState } from "../db/schema";
 import { runIncrementalSync } from "../src/services/drive-sync";
 import { itemUrls } from "../src/services/item-urls";
+import { applyMigrations } from "../src/test-support/migrations";
 import crawl from "./crawl";
 
 const sendCrawl = vi.hoisted(() => vi.fn());
@@ -22,12 +22,6 @@ const sendCrawl = vi.hoisted(() => vi.fn());
 vi.mock("void/queues", () => ({ queues: { crawl: { send: sendCrawl } } }));
 
 type Env = Parameters<typeof runIncrementalSync>[1];
-
-const migrations = import.meta.glob<string>("../db/migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
 
 const FOLDER = "application/vnd.google-apps.folder";
 const creds = { clientId: "c", clientSecret: "s", refreshToken: "r" };
@@ -87,15 +81,8 @@ function messages() {
 
 beforeAll(async () => {
   proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  const bindings = proxy.env as unknown as Env;
-
-  for (const path of Object.keys(migrations).sort()) {
-    for (const statement of migrations[path].split("--> statement-breakpoint")) {
-      if (statement.trim()) await bindings.DB.prepare(statement.trim()).run();
-    }
-  }
-
-  env = bindings;
+  env = proxy.env as unknown as Env;
+  await applyMigrations(env.DB);
 });
 
 afterAll(async () => {

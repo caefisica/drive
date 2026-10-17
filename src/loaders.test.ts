@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import { Hono, type Context } from "hono";
 import {
   afterAll,
@@ -14,27 +13,9 @@ import type { CloudEnv } from "void";
 import { getPlatformProxy } from "wrangler";
 
 import { signUnlockCookie } from "./services/crypto";
+import { applyMigrations } from "./test-support/migrations";
 
 vi.mock("void/queues", () => ({ queues: { crawl: { send: vi.fn() } } }));
-
-const migrations = import.meta.glob<string>("../db/migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
-
-async function applyMigrations(db: D1Database) {
-  for (const path of Object.keys(migrations).sort()) {
-    const statements = migrations[path]
-      .split("--> statement-breakpoint")
-      .map((statement) => statement.trim())
-      .filter(Boolean);
-
-    for (const statement of statements) {
-      await db.prepare(statement).run();
-    }
-  }
-}
 
 const SECRETS = ["client-secret-zero", "refresh-token-zero", "client-secret-one", "refresh-one"];
 const UNLOCK_SECRET = "test-unlock-secret";
@@ -196,11 +177,26 @@ afterEach(async () => {
 });
 
 describe("page loaders", () => {
-  it("send only idx, name and kind of each drive from the home page", async () => {
-    const response = await render(indexApp, "/");
-    const props = await response.json<Record<string, unknown>>();
+  it.each([
+    { page: "the home page", app: () => indexApp, path: "/", type: "directory" },
+    { page: "a directory", app: () => pathApp, path: "/0/docs/", type: "directory" },
+    { page: "a file", app: () => pathApp, path: "/0/docs/readme.txt", type: "file" },
+    { page: "the password form", app: () => pathApp, path: "/0/vault/", type: "locked" },
+    {
+      page: "an unlocked folder",
+      app: () => pathApp,
+      path: "/0/vault/",
+      type: "directory",
+      unlocked: "vault",
+    },
+  ])("send only idx, name and kind of each drive for $page", async (c) => {
+    const unlockCookie = c.unlocked
+      ? await signUnlockCookie([{ d: 0, f: c.unlocked }], UNLOCK_SECRET)
+      : undefined;
+    const cookie = unlockCookie ? `drive_unlock=${encodeURIComponent(unlockCookie)}` : undefined;
+    const props = await (await render(c.app(), c.path, cookie)).json<Record<string, unknown>>();
 
-    expect(props.type).toBe("directory");
+    expect(props.type).toBe(c.type);
     expectOnlyPublicDrives(props);
     expectNoSecrets(props);
   });
@@ -210,24 +206,6 @@ describe("page loaders", () => {
     const response = await indexApp.request("/", {}, env);
 
     expect(await response.json()).toEqual({ type: "no-config" });
-  });
-
-  it("send only the public drive fields for a directory", async () => {
-    const response = await render(pathApp, "/0/docs/");
-    const props = await response.json<Record<string, unknown>>();
-
-    expect(props.type).toBe("directory");
-    expectOnlyPublicDrives(props);
-    expectNoSecrets(props);
-  });
-
-  it("send only the public drive fields for a file", async () => {
-    const response = await render(pathApp, "/0/docs/readme.txt");
-    const props = await response.json<Record<string, unknown>>();
-
-    expect(props.type).toBe("file");
-    expectOnlyPublicDrives(props);
-    expectNoSecrets(props);
   });
 
   it("show the password form on the home page when the first drive's root is locked", async () => {
@@ -288,28 +266,5 @@ describe("page loaders", () => {
     expect(doc).toMatchObject({ type: "file", exportExt: ".docx" });
     expect(doc.exportUrl).toMatch(/^\/api\/export\/notes\?d=0&t=/);
     expect(form).toMatchObject({ type: "file", exportUrl: null, exportExt: "" });
-  });
-
-  it("send only the public drive fields on the password form", async () => {
-    const response = await render(pathApp, "/0/vault/");
-    const props = await response.json<Record<string, unknown>>();
-
-    expect(props.type).toBe("locked");
-    expectOnlyPublicDrives(props);
-    expectNoSecrets(props);
-  });
-
-  it("send only the public drive fields once the folder is unlocked", async () => {
-    const cookie = await signUnlockCookie([{ d: 0, f: "vault" }], UNLOCK_SECRET);
-    const response = await render(
-      pathApp,
-      "/0/vault/",
-      `drive_unlock=${encodeURIComponent(cookie)}`,
-    );
-    const props = await response.json<Record<string, unknown>>();
-
-    expect(props.type).toBe("directory");
-    expectOnlyPublicDrives(props);
-    expectNoSecrets(props);
   });
 });

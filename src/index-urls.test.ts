@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
 import {
@@ -21,6 +20,7 @@ import { resolvePath } from "./integrations/google-drive";
 import { itemUrls } from "./services/item-urls";
 import { runIncrementalSync } from "./services/drive-sync";
 import { FakeDrive, file, folder } from "./test-support/fake-drive";
+import { applyMigrations } from "./test-support/migrations";
 
 const local = vi.hoisted(() => ({
   queued: [] as unknown[],
@@ -29,12 +29,6 @@ const local = vi.hoisted(() => ({
 vi.mock("void/queues", () => ({
   queues: { crawl: { send: async (body: unknown) => void local.queued.push(body) } },
 }));
-
-const migrations = import.meta.glob<string>("../db/migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
 
 const WEBHOOK_SECRET = "test-webhook-secret";
 const creds = { name: "d", clientId: "c", clientSecret: "s", refreshToken: "r" };
@@ -193,11 +187,7 @@ beforeAll(async () => {
   proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
   ({ DB: d1, KV: kv } = proxy.env as unknown as { DB: D1Database; KV: KVNamespace });
 
-  for (const path of Object.keys(migrations).sort()) {
-    for (const statement of migrations[path].split("--> statement-breakpoint")) {
-      if (statement.trim()) await d1.prepare(statement.trim()).run();
-    }
-  }
+  await applyMigrations(d1);
 
   const webhook = await import("../routes/api/webhook/[driveIdx]");
   const search = await import("../routes/api/search");

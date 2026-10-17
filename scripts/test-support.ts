@@ -8,7 +8,6 @@ const lock = JSON.parse(readFileSync("void.lock.json", "utf8")) as {
 
 export const DEV_KV_ID = lock.resolved.kv_namespaces.find((kv) => kv.binding === "KV")!.id;
 
-/** Reads a key of a namespace from a local KV directory, as `vp dev` would serve it. */
 export function readLocalKv(persistDir: string, namespaceId: string, key: string): string | null {
   const wrangler = spawnSync(
     "node_modules/.bin/wrangler",
@@ -21,7 +20,6 @@ export function readLocalKv(persistDir: string, namespaceId: string, key: string
   return wrangler.status === 0 && value !== "Value not found" ? value : null;
 }
 
-/** Reads a key from the KV namespace that `vp dev` serves. */
 export function readDevKv(persistDir: string, key: string): string | null {
   return readLocalKv(persistDir, DEV_KV_ID, key);
 }

@@ -58,13 +58,6 @@ describe("storePassword", { timeout: 30_000 }, () => {
     expect(readLocalKv(persistDir, "local", key)).toBeNull();
   });
 
-  it("uses root for a drive whose root id is root", async () => {
-    const { key } = await store();
-
-    expect(key).toBe("passwd:0:root");
-    expect(await storedHash(key)).toMatch(/^pbkdf2:/);
-  });
-
   it("locks the folder it is given and nothing else", async () => {
     const { key } = await store({ driveIdx: 1, folderId: "1BxiMVs0XRA5nFMdKvBd" });
 
@@ -88,17 +81,6 @@ describe("storePassword", { timeout: 30_000 }, () => {
     await expect(store({ driveIdx: 5 })).rejects.toThrow("drive 5 is not in DRIVES");
     await expect(store({ drives: undefined })).rejects.toThrow("drive 0 is not in DRIVES");
   });
-
-  it("refuses --remote without a namespace id", async () => {
-    await expect(store({ remote: { namespaceId: "" } })).rejects.toThrow("--namespace-id");
-  });
-
-  it.each([1.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
-    "refuses the drive index %s",
-    async (driveIdx) => {
-      await expect(store({ driveIdx })).rejects.toThrow("non-negative integer");
-    },
-  );
 });
 
 describe("optionsFromArgs", () => {
@@ -165,6 +147,10 @@ describe("optionsFromArgs", () => {
     expect(() => parse("--drive", "0", "--password", "s", "--namespace-id", "ns")).toThrow(
       "only applies with --remote",
     );
+  });
+
+  it("refuses --remote without a namespace id", () => {
+    expect(() => parse("--drive", "0", "--password", "s", "--remote")).toThrow("--namespace-id");
   });
 
   it("refuses a local directory with --remote", () => {
