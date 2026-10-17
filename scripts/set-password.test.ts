@@ -27,7 +27,8 @@ function run(...args: string[]) {
 }
 
 describe("set-password CLI", () => {
-  it("stores the password and prints where", async () => {
+  // The script and the read-back each start Wrangler, which takes several seconds.
+  it("stores the password and prints where", { timeout: 30_000 }, async () => {
     const result = run("--drive", "0", "--password", "secret", "--persist-to", persistDir);
 
     expect(result.status).toBe(0);
