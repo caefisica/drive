@@ -5,21 +5,21 @@
   },
   "resolved": {
     "name": "drive",
-    "account_id": "87dbfa4b79d775c28dda68b15f58a0cb",
+    "account_id": "165a663123262d8ba6c08e92cff7e056",
     "d1_databases": [
       {
         "binding": "DB",
         "database_name": "drive-db",
-        "database_id": "b4d91457-eee4-4665-bd83-2129036ef13b",
+        "database_id": "0cc8987c-48ee-4737-b9a4-5d0b365298a8",
         "migrations_dir": "./db/migrations"
       }
     ],
     "kv_namespaces": [
       {
         "binding": "KV",
-        "id": "6e7e2b0154bb418bbba146e450394e4b"
+        "id": "8477960ffeb4403ab713ba745f634507"
       }
     ]
   },
-  "text": "{\n  \"name\": \"drive\",\n  \"account_id\": \"87dbfa4b79d775c28dda68b15f58a0cb\",\n  \"d1_databases\": [\n    {\n      \"binding\": \"DB\",\n      \"database_name\": \"drive-db\",\n      \"database_id\": \"b4d91457-eee4-4665-bd83-2129036ef13b\",\n      \"migrations_dir\": \"./db/migrations\"\n    }\n  ],\n  \"kv_namespaces\": [\n    {\n      \"binding\": \"KV\",\n      \"id\": \"6e7e2b0154bb418bbba146e450394e4b\"\n    }\n  ]\n}\n"
+  "text": "{\n  \"name\": \"drive\",\n  \"account_id\": \"165a663123262d8ba6c08e92cff7e056\",\n  \"d1_databases\": [\n    {\n      \"binding\": \"DB\",\n      \"database_name\": \"drive-db\",\n      \"database_id\": \"0cc8987c-48ee-4737-b9a4-5d0b365298a8\",\n      \"migrations_dir\": \"./db/migrations\"\n    }\n  ],\n  \"kv_namespaces\": [\n    {\n      \"binding\": \"KV\",\n      \"id\": \"8477960ffeb4403ab713ba745f634507\"\n    }\n  ]\n}\n"
 }
