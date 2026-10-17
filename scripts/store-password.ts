@@ -4,22 +4,19 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudEnv } from "void";
 
-import { getDrive, isDriveIdx, parseDriveIdx } from "../src/config";
+import { getDrive, parseDriveIdx } from "../src/config";
 import { hashPassword } from "../src/services/crypto";
 import { passwordKey } from "../src/services/folder-access";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 export type StorePasswordOptions = {
-  /** The DRIVES JSON, as in `.env`. */
   drives: string | undefined;
   driveIdx: number;
   password: string;
-  /** Defaults to the drive's rootId. */
   folderId?: string;
-  /** Write to this production KV namespace instead of the local one. */
   remote?: { namespaceId: string };
-  /** Local KV directory, relative to the project root. Defaults to `.void`. */
+  /** Relative to the project root. */
   persistTo?: string;
 };
 
@@ -65,7 +62,6 @@ function parseFlags(args: string[]): { values: Map<string, string>; remote: bool
   return { values, remote };
 }
 
-/** Reads the `set-password` command line. Throws with the reason when it names no target. */
 export function optionsFromArgs(args: string[], drives: string | undefined): StorePasswordOptions {
   const { values, remote } = parseFlags(args);
   const password = values.get("--password");
@@ -95,27 +91,24 @@ export function optionsFromArgs(args: string[], drives: string | undefined): Sto
     throw new Error(`--persist-to only applies to the local KV, not with --remote`);
   }
 
+  if (remote && !namespaceId) {
+    throw new Error(
+      `--remote needs --namespace-id <id>, the id of the production KV namespace\n${USAGE}`,
+    );
+  }
+
   return {
     drives,
     driveIdx,
     password,
     folderId: values.get("--folder-id"),
-    remote: remote ? { namespaceId: namespaceId ?? "" } : undefined,
+    remote: remote ? { namespaceId: namespaceId! } : undefined,
     persistTo,
   };
 }
 
-/** Hashes the password and stores the hash in KV under the folder's `passwd:` key. */
 export async function storePassword(options: StorePasswordOptions): Promise<StoredPassword> {
   const { driveIdx, password, remote } = options;
-
-  if (!isDriveIdx(driveIdx)) {
-    throw new Error(`drive index must be a non-negative integer, got ${driveIdx}`);
-  }
-
-  if (remote && !remote.namespaceId) {
-    throw new Error("--remote needs --namespace-id <id>, the id of the production KV namespace");
-  }
 
   const drive = getDrive(driveIdx, { DRIVES: options.drives ?? "[]" } as CloudEnv["Bindings"]);
   if (!drive) {
@@ -135,11 +128,9 @@ export async function storePassword(options: StorePasswordOptions): Promise<Stor
   return { key, location: "local KV" };
 }
 
-/**
- * The id of the KV namespace `vp dev` serves. Void takes it from void.lock.json and names it
- * "local" only when the lockfile does not exist or holds no KV namespace. A lockfile that cannot be
- * read or parsed throws, because writing under the wrong id would store a password nothing reads.
- */
+// Void names the namespace "local" only when void.lock.json does not exist or holds no KV
+// namespace. An unreadable lockfile throws, because writing under the wrong id would store a
+// password nothing reads.
 function localKvNamespaceId(): string {
   let text: string;
 
