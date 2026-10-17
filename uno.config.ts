@@ -3,7 +3,6 @@ import {
   presetIcons,
   presetTypography,
   presetWind4,
-  transformerDirectives,
   transformerVariantGroup,
 } from "unocss";
 
@@ -20,7 +19,7 @@ export default defineConfig({
     }),
     presetTypography(),
   ],
-  transformers: [transformerDirectives(), transformerVariantGroup()],
+  transformers: [transformerVariantGroup()],
   theme: {
     font: {
       mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -40,30 +39,10 @@ export default defineConfig({
       },
       border: {
         DEFAULT: "var(--border)",
-        subtle: "var(--border-subtle)",
         hover: "var(--border-hover)",
       },
       accent: {
         DEFAULT: "var(--accent)",
-      },
-    },
-    animation: {
-      keyframes: {
-        "fade-in": "{from { opacity: 0 } to { opacity: 1 }}",
-        "slide-up":
-          "{from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) }}",
-        "scale-in":
-          "{from { opacity: 0; transform: scale(0.95) } to { opacity: 1; transform: scale(1) }}",
-      },
-      durations: {
-        "fade-in": "0.3s",
-        "slide-up": "0.4s",
-        "scale-in": "0.2s",
-      },
-      timingFns: {
-        "fade-in": "ease-out",
-        "slide-up": "cubic-bezier(0.22, 1, 0.36, 1)",
-        "scale-in": "cubic-bezier(0.22, 1, 0.36, 1)",
       },
     },
   },
@@ -91,5 +70,4 @@ export default defineConfig({
       "inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-fg text-sm font-mono hover:bg-accent/15 transition-colors focus-ring",
     ],
   ],
-  rules: [["animate-fill-both", { "animation-fill-mode": "both" }]],
 });
