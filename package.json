@@ -5,13 +5,13 @@
   },
   "dependencies": {
     "@void/vue": "^0.26.0",
-    "drizzle-orm": "^0.45.3",
-    "markdown-it": "^15.0.1",
-    "shiki": "^4.4.3",
-    "unocss": "^66.9.2",
+    "drizzle-orm": "^0.45.4",
+    "markdown-it": "^15.0.3",
+    "shiki": "^4.5.0",
+    "unocss": "^66.11.0",
     "vite-plus": "^0.3.0",
     "void": "^0.26.0",
-    "vue": "^3.5.42"
+    "vue": "^3.5.44"
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.129",
