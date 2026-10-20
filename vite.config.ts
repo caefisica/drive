@@ -3,8 +3,13 @@ import { defineConfig, lazyPlugins } from "vite-plus";
 import { voidPlugin } from "void";
 import UnoCSS from "unocss/vite";
 
+// Vitest 5 cannot start with @cloudflare/vite-plugin. Wrangler provides D1 and
+// KV to the tests.
+const plugins = () =>
+  process.env["VITEST"] ? [UnoCSS(), ...voidVue()] : [voidPlugin(), UnoCSS(), ...voidVue()];
+
 export default defineConfig({
-  plugins: lazyPlugins(() => [voidPlugin(), UnoCSS(), ...voidVue()]),
+  plugins: lazyPlugins(plugins),
   staged: {
     "*": "vp check --fix",
   },
