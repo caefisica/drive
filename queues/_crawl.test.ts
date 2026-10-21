@@ -1,20 +1,10 @@
 import { drizzle } from "drizzle-orm/d1";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { driveItems, syncState } from "../db/schema";
 import { runIncrementalSync } from "../src/services/drive-sync";
 import { itemUrls } from "../src/services/item-urls";
-import { applyMigrations } from "../src/test-support/migrations";
+import { bindings } from "../src/test-support/platform";
 import crawl from "./crawl";
 
 const sendCrawl = vi.hoisted(() => vi.fn());
@@ -36,7 +26,6 @@ const cases = [
   { name: "a folder", config: { kind: "folder", rootId: "folder-id" }, root: "folder-id" },
 ];
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Env;
 let changes: unknown[];
 
@@ -79,14 +68,8 @@ function messages() {
   return sendCrawl.mock.calls.map(([body]) => body);
 }
 
-beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  env = proxy.env as unknown as Env;
-  await applyMigrations(env.DB);
-});
-
-afterAll(async () => {
-  await proxy.dispose();
+beforeAll(() => {
+  env = bindings() as unknown as Env;
 });
 
 beforeEach(async () => {

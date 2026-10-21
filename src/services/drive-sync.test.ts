@@ -1,23 +1,13 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { crawlPending, driveItems, driveRemovals, syncState } from "../../db/schema";
 import type * as GoogleDrive from "../integrations/google-drive";
 import type { DriveChange, DriveChangesResult, DriveFile } from "../integrations/google-drive";
 import { fetchChanges, getStartPageToken, listDriveFolder } from "../integrations/google-drive";
 import { crawlFolder, initializeSyncState, runIncrementalSync, syncDrive } from "./drive-sync";
-import { applyMigrations } from "../test-support/migrations";
+import { bindings } from "../test-support/platform";
 
 vi.mock("../integrations/google-drive", async (importOriginal) => ({
   ...(await importOriginal<typeof GoogleDrive>()),
@@ -34,7 +24,6 @@ vi.mock("void/queues", () => ({
 
 type Env = Parameters<typeof runIncrementalSync>[1];
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Env;
 
 function upsert(id: string, name: string): DriveChange {
@@ -74,18 +63,8 @@ function page(changes: DriveChange[], next: Partial<DriveChangesResult>): DriveC
 const stateOf = async () =>
   (await drizzle(env.DB).select().from(syncState).where(eq(syncState.driveIdx, 0)))[0];
 
-beforeAll(async () => {
-  proxy = await getPlatformProxy({
-    configPath: "test/wrangler.jsonc",
-    persist: false,
-  });
-  const bindings = proxy.env as unknown as Env;
-  await applyMigrations(bindings.DB);
-  env = bindings;
-});
-
-afterAll(async () => {
-  await proxy.dispose();
+beforeAll(() => {
+  env = bindings() as unknown as Env;
 });
 
 beforeEach(async () => {

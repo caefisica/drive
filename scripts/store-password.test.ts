@@ -37,7 +37,7 @@ function storedHash(key: string): Promise<string | null> {
 }
 
 // Each write and read starts Wrangler, which takes seconds.
-describe("storePassword", { timeout: 30_000 }, () => {
+describe("storePassword", { timeout: 120_000 }, () => {
   it("stores a hash of the password under the drive's configured root id", async () => {
     const stored = await store({ driveIdx: 1 });
 

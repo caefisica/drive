@@ -1,20 +1,10 @@
 import { drizzle } from "drizzle-orm/d1";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { crawlPending, driveItems, syncState } from "../../db/schema";
 import { FOLDER_MIME, resolveFolderId } from "../integrations/google-drive";
 import { FakeDrive, file, folder, type FakeFile } from "../test-support/fake-drive";
-import { applyMigrations } from "../test-support/migrations";
+import { bindings } from "../test-support/platform";
 import { crawlFolder, initializeSyncState } from "./drive-sync";
 import { crawledRoot, listFolder, resolvePath } from "./listing";
 
@@ -23,7 +13,6 @@ vi.mock("void/queues", () => ({ queues: { crawl: { send: vi.fn() } } }));
 const ROOT = "0ARealRoot";
 const creds = { name: "d", clientId: "c", clientSecret: "s", refreshToken: "r" };
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Parameters<typeof listFolder>[2];
 let fake: FakeDrive;
 
@@ -42,20 +31,11 @@ const idsIn = async (folderId: string) => (await listFolder(0, folderId, env)).m
 const resolve = async (...segments: string[]) =>
   (await resolvePath(0, segments, ROOT, env))?.finalId ?? null;
 
-beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  await applyMigrations((proxy.env as unknown as { DB: D1Database }).DB);
-});
-
-afterAll(async () => {
-  await proxy.dispose();
-});
-
 beforeEach(() => {
   fake = new FakeDrive(ROOT);
   fake.install();
   env = {
-    ...(proxy.env as object),
+    ...bindings(),
     DRIVES: JSON.stringify([{ ...creds, kind: "shared_drive", rootId: ROOT }]),
   } as typeof env;
 });

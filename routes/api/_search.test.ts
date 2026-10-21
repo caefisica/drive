@@ -1,15 +1,13 @@
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CloudEnv } from "void";
-import { getPlatformProxy } from "wrangler";
 
 import { driveItems } from "../../db/schema";
 import { signUnlockCookie } from "../../src/services/crypto";
-import { applyMigrations } from "../../src/test-support/migrations";
+import { bindings } from "../../src/test-support/platform";
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let d1: D1Database;
 let kv: KVNamespace;
 let app: Hono<CloudEnv>;
@@ -52,21 +50,9 @@ async function lock(driveIdx: number, folderId: string) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({
-    configPath: "test/wrangler.jsonc",
-    persist: false,
-  });
-  ({ DB: d1, KV: kv } = proxy.env as unknown as {
-    DB: D1Database;
-    KV: KVNamespace;
-  });
-  await applyMigrations(d1);
+  ({ DB: d1, KV: kv } = bindings());
   const { GET } = await import("./search");
   app = new Hono<CloudEnv>().get("/", async (c) => (await GET(c)) as Response);
-});
-
-afterAll(async () => {
-  await proxy.dispose();
 });
 
 beforeEach(async () => {

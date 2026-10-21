@@ -1,10 +1,10 @@
 /// <reference types="vite/client" />
 import { Hono } from "hono";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { CloudEnv } from "void";
-import { getPlatformProxy } from "wrangler";
 
 import { signStreamToken } from "../../src/services/crypto";
+import { bindings } from "../../src/test-support/platform";
 
 const STREAM_SECRET = "test-stream-secret";
 const UNLOCK_SECRET = "test-unlock-secret";
@@ -17,7 +17,6 @@ const drive = {
   refreshToken: "r",
 };
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let app: Hono<CloudEnv>;
 let upstream: ReturnType<typeof vi.fn>;
 
@@ -26,7 +25,7 @@ const WEBHOOK_SECRET = "test-webhook-secret";
 function request(path: string, init?: RequestInit, webhookSecret?: string) {
   const env = {
     DRIVES: JSON.stringify([drive, drive]),
-    KV: (proxy.env as unknown as { KV: KVNamespace }).KV,
+    KV: bindings().KV,
     STREAM_SECRET,
     UNLOCK_SECRET,
     WEBHOOK_SECRET: webhookSecret,
@@ -36,8 +35,6 @@ function request(path: string, init?: RequestInit, webhookSecret?: string) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-
   const stream = await import("./stream/[fileId]");
   const exported = await import("./export/[fileId]");
   const unlock = await import("./unlock");
@@ -48,10 +45,6 @@ beforeAll(async () => {
     .get("/api/stream/:fileId", async (c) => (await stream.GET(c)) as Response)
     .get("/api/export/:fileId", async (c) => (await exported.GET(c)) as Response)
     .post("/api/unlock", async (c) => (await unlock.POST(c)) as Response);
-});
-
-afterAll(async () => {
-  await proxy.dispose();
 });
 
 afterEach(() => {

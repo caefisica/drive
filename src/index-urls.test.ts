@@ -1,17 +1,7 @@
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CloudEnv } from "void";
-import { getPlatformProxy } from "wrangler";
 
 import { crawlPending, driveItems, syncState } from "../db/schema";
 import cron from "../crons/sync";
@@ -20,7 +10,7 @@ import { resolvePath } from "./services/listing";
 import { itemUrls } from "./services/item-urls";
 import { runIncrementalSync } from "./services/drive-sync";
 import { FakeDrive, file, folder } from "./test-support/fake-drive";
-import { applyMigrations } from "./test-support/migrations";
+import { bindings } from "./test-support/platform";
 
 const local = vi.hoisted(() => ({
   queued: [] as unknown[],
@@ -45,7 +35,6 @@ const kinds = [
   { name: "a folder", config: { kind: "folder", rootId: "1Shared" }, root: "1Shared" },
 ];
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let d1: D1Database;
 let kv: KVNamespace;
 let env: Record<string, unknown>;
@@ -184,10 +173,7 @@ async function listedUrlNames(path: string): Promise<string[]> {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  ({ DB: d1, KV: kv } = proxy.env as unknown as { DB: D1Database; KV: KVNamespace });
-
-  await applyMigrations(d1);
+  ({ DB: d1, KV: kv } = bindings());
 
   const webhook = await import("../routes/api/webhook/[driveIdx]");
   const search = await import("../routes/api/search");
@@ -205,10 +191,6 @@ beforeAll(async () => {
   searchApp = new Hono<CloudEnv>().get("/", async (c) => (await search.GET(c)) as Response);
   homeApp = new Hono<CloudEnv>().get("/", (c) => respond(index.loader, c));
   pathApp = new Hono<CloudEnv>().get("/:path{.+}", (c) => respond(path.loader, c));
-});
-
-afterAll(async () => {
-  await proxy.dispose();
 });
 
 afterEach(async () => {

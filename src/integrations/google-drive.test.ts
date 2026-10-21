@@ -1,18 +1,9 @@
 /// <reference types="vite/client" />
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
-import { getPlatformProxy } from "wrangler";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { FakeDrive, file } from "../test-support/fake-drive";
 import { getRootId, listDriveFolder, resolveFolderId } from "./google-drive";
+import { FakeDrive, file } from "../test-support/fake-drive";
+import { bindings } from "../test-support/platform";
 
 const drives = [
   {
@@ -41,7 +32,6 @@ const drives = [
   },
 ];
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let env: Parameters<typeof resolveFolderId>[2];
 let upstream: ReturnType<typeof vi.fn>;
 
@@ -68,13 +58,8 @@ function filesRootCalls() {
   return upstream.mock.calls.filter(([url]) => String(url).includes("/files/root"));
 }
 
-beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  env = { ...(proxy.env as object), DRIVES: JSON.stringify(drives) } as typeof env;
-});
-
-afterAll(async () => {
-  await proxy.dispose();
+beforeAll(() => {
+  env = { ...bindings(), DRIVES: JSON.stringify(drives) } as typeof env;
 });
 
 beforeEach(() => {

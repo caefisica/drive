@@ -1,22 +1,12 @@
 import { Hono, type Context } from "hono";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CloudEnv } from "void";
-import { getPlatformProxy } from "wrangler";
 
 import { drizzle } from "drizzle-orm/d1";
 
 import { driveItems, syncState } from "../db/schema";
 import { signUnlockCookie } from "./services/crypto";
-import { applyMigrations } from "./test-support/migrations";
+import { bindings } from "./test-support/platform";
 
 vi.mock("void/queues", () => ({ queues: { crawl: { send: vi.fn() } } }));
 
@@ -59,7 +49,6 @@ const children: Record<string, Array<{ id: string; name: string; mimeType: strin
   ],
 };
 
-let proxy: Awaited<ReturnType<typeof getPlatformProxy>>;
 let kv: KVNamespace;
 let d1: D1Database;
 let indexApp: Hono<CloudEnv>;
@@ -166,9 +155,7 @@ function expectNoSecrets(props: unknown) {
 }
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy({ configPath: "test/wrangler.jsonc", persist: false });
-  ({ DB: d1, KV: kv } = proxy.env as unknown as { DB: D1Database; KV: KVNamespace });
-  await applyMigrations(d1);
+  ({ DB: d1, KV: kv } = bindings());
 
   const index = await import("../pages/index.server");
   const path = await import("../pages/[...path].server");
@@ -179,10 +166,6 @@ beforeAll(async () => {
 
   indexApp = new Hono<CloudEnv>().get("/", (c) => respond(index.loader, c));
   pathApp = new Hono<CloudEnv>().get("/:path{.+}", (c) => respond(path.loader, c));
-});
-
-afterAll(async () => {
-  await proxy.dispose();
 });
 
 beforeEach(async () => {
