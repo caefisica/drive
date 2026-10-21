@@ -11,16 +11,17 @@ drive. `/api/search` is [search](#search).
 
 ## Listings
 
-A folder page lists the folder's files in the order Drive returns for
-`folder,name,modifiedTime desc`.
+A folder page lists the folder's files from the [index](sync.md) in D1: folders
+first, then by name, then the newest first. Names compare ignoring ASCII case,
+and `10` sorts before `2`.
 
 - A shortcut appears as its target.
 - Trashed files do not appear.
 - A file named `.password` does not appear, and no URL reaches it.
-- The whole folder is listed, every page of Google's answer, so a name shared by
-  two files is always noticed.
-- Listings are cached in KV. Resolving a URL to a file is not. See
-  [KV keys](architecture.md#kv-keys).
+- The whole folder is listed, so a name shared by two files is always noticed.
+- A change in Drive shows once [sync](sync.md#incremental-sync) has applied it.
+- While a drive's first crawl is unfinished, its pages answer 503 with "not
+  indexed yet".
 
 ### Duplicate names
 

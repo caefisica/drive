@@ -1,14 +1,13 @@
 # Sync
 
-Search reads the `drive_items` table in D1 ([db/schema.ts](../db/schema.ts)).
-Three paths write to it. All of them use
+Folder pages and search read the `drive_items` table in D1
+([db/schema.ts](../db/schema.ts)). Two paths write to it. Both use
 [src/services/drive-sync.ts](../src/services/drive-sync.ts). The `sync_state`
 table holds one row per drive; [Architecture](architecture.md#sync_state)
 describes its columns and statuses.
 
 | Path        | Trigger                        | Writes                                  |
 | ----------- | ------------------------------ | --------------------------------------- |
-| Browsing    | A visitor opens a folder       | Rows for the folder's files.            |
 | Crawl queue | A message on the `crawl` queue | Rows for every folder of a drive.       |
 | Incremental | Cron, or a Drive webhook       | Files that changed since the last sync. |
 
@@ -18,13 +17,10 @@ run concurrently. The [concurrency rule](architecture.md#concurrency-rule)
 describes how they avoid conflicting writes.
 
 A new drive needs no setup. The first cron tick or webhook for it queues a crawl
-that indexes every folder, and later ticks apply only what changed.
-
-## Browsing
-
-Opening a folder page lists it from Drive and, after responding, inserts any
-rows that are not yet in D1. Existing rows are left alone
-([pages/[...path].server.ts](../pages/[...path].server.ts)).
+that indexes every folder, and later ticks apply only what changed. Until the
+crawl has read every folder, the drive's home and folder pages answer 503 with
+the message "not indexed yet". Visitors who reload a few minutes later see the
+drive.
 
 ## Crawl queue
 
@@ -36,17 +32,26 @@ a time and retries a failed message 3 times. It handles two message bodies:
 { "type": "folder", "driveIdx": 0, "folderId": "…" }
 ```
 
-- `init` stores Drive's current change token in `sync_state`, then enqueues a
-  `folder` message for the drive's root. It looks the root up first, so a My
-  Drive configured as `root` starts at its real ID
+- `init` stores Drive's current change token in `sync_state` and clears
+  `crawled_at`, then enqueues a `folder` message for the drive's root. It looks
+  the root up first, so a My Drive configured as `root` starts at its real ID
   ([`rootid:` key](architecture.md#kv-keys)).
-- `folder` reads the drive's `feed_seq`, lists the folder fresh, upserts every
-  item except rows the change feed stamped after that read, and enqueues a
-  `folder` message for each subfolder.
+- `folder` reads the drive's `feed_seq`, lists the folder from Drive, upserts
+  every item except rows the change feed stamped after that read, and enqueues a
+  `folder` message for each subfolder. It keeps the list of folders still to
+  read, and sets `crawled_at` when that list is empty.
 
 `syncDrive` queues `init` for a drive that has no change token. The
 [conditions](architecture.md#when-init-may-be-queued) keep overlapping ticks and
 webhooks from queuing it twice and let a lost `init` be queued again.
+
+A folder message that fails 3 times is dropped, and its drive keeps answering
+503 because the crawl never empties its list. Crawl the drive again by clearing
+its change token. The next cron tick queues `init`. `0` is the drive's index:
+
+```sh
+vp exec void db execute --remote "UPDATE sync_state SET page_token = NULL WHERE drive_idx = 0"
+```
 
 ## Incremental sync
 

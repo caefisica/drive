@@ -51,4 +51,14 @@ database and KV namespace that [void.config.ts](../void.config.ts) infers. It
 records their IDs in `void.lock.json`.
 
 The first cron tick after the deploy starts indexing each drive; see
-[Sync](sync.md). Optionally [register the webhook](sync.md#webhook).
+[Sync](sync.md). Until a drive's crawl ends, its pages answer 503 with "not
+indexed yet". Optionally [register the webhook](sync.md#webhook).
+
+## Updating
+
+`mise run release:app` applies pending migrations before it deploys. The index
+is disposable: a migration that changes what the crawl stores deletes every row
+of `drive_items`, `drive_removals` and `sync_state`. The first cron tick after
+the deploy crawls every drive again. Pages answer 503 until each crawl ends, and
+search finds nothing in a drive until the crawl has indexed it. To apply
+migrations without a deploy, run `mise run db:migrate:remote`.
