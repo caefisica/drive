@@ -12,6 +12,9 @@ import {
 import type { CloudEnv } from "void";
 import { getPlatformProxy } from "wrangler";
 
+import { drizzle } from "drizzle-orm/d1";
+
+import { driveItems, syncState } from "../db/schema";
 import { signUnlockCookie } from "./services/crypto";
 import { applyMigrations } from "./test-support/migrations";
 
@@ -40,9 +43,11 @@ const drives = [
 ];
 
 const FOLDER = "application/vnd.google-apps.folder";
+const ROOT = "0AMineRoot";
 
+// The index as a finished crawl leaves it, for the drive at index 0.
 const children: Record<string, Array<{ id: string; name: string; mimeType: string }>> = {
-  root: [
+  [ROOT]: [
     { id: "docs", name: "docs", mimeType: FOLDER },
     { id: "vault", name: "vault", mimeType: FOLDER },
   ],
@@ -60,6 +65,7 @@ let d1: D1Database;
 let indexApp: Hono<CloudEnv>;
 let pathApp: Hono<CloudEnv>;
 
+// Every folder page is answered from the index, so Google serves only the preview of a file.
 function stubGoogle() {
   vi.stubGlobal(
     "fetch",
@@ -70,37 +76,53 @@ function stubGoogle() {
         return Response.json({ access_token: "access", expires_in: 3600 });
       }
 
-      const file = /\/files\/([^/?]+)$/.exec(url.pathname);
-
-      if (file && url.searchParams.get("alt") === "media") {
-        return new Response("hello");
-      }
-
-      if (file) {
-        const found = Object.values(children)
-          .flat()
-          .find((child) => child.id === file[1]);
-        return Response.json(found);
-      }
-
-      const q = url.searchParams.get("q") ?? "";
-      const parent = /^'([^']+)' in parents/.exec(q)?.[1] ?? "";
-      const name = /name = '([^']+)'/.exec(q)?.[1];
-      const hidesPassword = q.includes("name != '.password'");
-      const files = (children[parent] ?? [])
-        .filter((child) => !name || child.name === name)
-        .filter((child) => !hidesPassword || child.name !== ".password");
-
-      return Response.json({ files });
+      return new Response("hello");
     }),
   );
 }
 
-async function render(app: Hono<CloudEnv>, path: string, cookie?: string) {
+async function seedIndex({ crawled }: { crawled: boolean }) {
+  const db = drizzle(d1);
+
+  await db
+    .insert(driveItems)
+    .values(
+      Object.entries(children).flatMap(([parentId, items]) =>
+        items.map((item) => ({ ...item, mimeType: item.mimeType, driveIdx: 0, parentId })),
+      ),
+    );
+
+  if (crawled) {
+    await db.insert(syncState).values({ driveIdx: 0, crawledAt: 1 });
+    await kv.put("rootid:0", ROOT);
+  }
+}
+
+function recordPuts() {
+  const puts: string[] = [];
+  const recording = new Proxy(kv, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as (...args: unknown[]) => unknown;
+
+      if (property === "put") {
+        return (key: string, ...rest: unknown[]) => {
+          puts.push(key);
+          return value.call(target, key, ...rest);
+        };
+      }
+
+      return value.bind(target);
+    },
+  });
+
+  return { kv: recording, puts };
+}
+
+async function render(app: Hono<CloudEnv>, path: string, cookie?: string, bindings = kv) {
   const env = {
     DRIVES: JSON.stringify(drives),
     DB: d1,
-    KV: kv,
+    KV: bindings,
     STREAM_SECRET: "test-stream-secret",
     UNLOCK_SECRET,
   };
@@ -165,11 +187,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   stubGoogle();
+  await seedIndex({ crawled: true });
   await kv.put("passwd:0:vault", "pbkdf2:salt:hash");
 });
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  await drizzle(d1).delete(driveItems);
+  await drizzle(d1).delete(syncState);
 
   for (const { name } of (await kv.list()).keys) {
     await kv.delete(name);
@@ -258,6 +283,40 @@ describe("page loaders", () => {
       expect(await response.json()).toEqual({ error: "not found" });
     },
   );
+
+  it.each([
+    { page: "the home page", app: () => indexApp, path: "/", names: ["docs", "vault"] },
+    {
+      page: "a folder page",
+      app: () => pathApp,
+      path: "/0/docs/",
+      names: ["notes", "readme.txt", "survey"],
+    },
+  ])("list $page from the index, without a KV put or a Google request", async (c) => {
+    const recorded = recordPuts();
+    const response = await render(c.app(), c.path, undefined, recorded.kv);
+    const props = await response.json<{ items: Array<{ name: string }> }>();
+
+    expect(response.status).toBe(200);
+    expect(props.items.map((item) => item.name)).toEqual(c.names);
+    expect(recorded.puts).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { page: "the home page", app: () => indexApp, path: "/" },
+    { page: "a folder page", app: () => pathApp, path: "/0/docs/" },
+  ])("answer 503 on $page while the drive has no finished crawl", async (c) => {
+    await drizzle(d1).delete(syncState);
+
+    const response = await render(c.app(), c.path);
+
+    expect(response.status).toBe(503);
+    expect(await response.json<{ error: string }>()).toEqual({
+      error: expect.stringContaining("not indexed yet"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("offer an export for a Docs file and none for a Form", async () => {
     const doc = await (await render(pathApp, "/0/docs/notes")).json<Record<string, unknown>>();

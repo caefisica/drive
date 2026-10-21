@@ -13,10 +13,10 @@ import {
 import type { CloudEnv } from "void";
 import { getPlatformProxy } from "wrangler";
 
-import { driveItems, syncState } from "../db/schema";
+import { crawlPending, driveItems, syncState } from "../db/schema";
 import cron from "../crons/sync";
 import crawl from "../queues/crawl";
-import { resolvePath } from "./integrations/google-drive";
+import { resolvePath } from "./services/listing";
 import { itemUrls } from "./services/item-urls";
 import { runIncrementalSync } from "./services/drive-sync";
 import { FakeDrive, file, folder } from "./test-support/fake-drive";
@@ -215,6 +215,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   await drizzle(d1).delete(driveItems);
   await drizzle(d1).delete(syncState);
+  await drizzle(d1).delete(crawlPending);
   await clearKv();
   local.queued.length = 0;
 });
@@ -246,6 +247,8 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     }
   }
 
+  const resolve = (segments: string[]) => resolvePath(0, segments, root, env as never);
+
   async function expectIndexAndPagesToAgree() {
     const expected: Record<string, string> = expectedUrls;
     const rows = await drizzle(d1).select().from(driveItems);
@@ -258,12 +261,13 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     expect(rows.find((row) => row.id === "S1")).toMatchObject({ name: "Notes", parentId: root });
 
     // Every URL leads to the file it was derived for.
-    await clearKv("path:");
-    for (const [id, url] of Object.entries(expected)) {
-      const segments = url.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
+    await Promise.all(
+      Object.entries(expected).map(async ([id, url]) => {
+        const segments = url.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
 
-      expect(await resolvePath(0, segments, env as never), url).toMatchObject({ finalId: id });
-    }
+        expect(await resolve(segments), url).toMatchObject({ finalId: id });
+      }),
+    );
 
     // The folders list their files by the shortest name that resolves.
     const home = await (await request(homeApp, "/")).json<{ items: Array<{ urlName: string }> }>();
@@ -293,7 +297,6 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
 
         await init({ crawled });
         mutate(root);
-        await clearKv("dir:");
         fake.delay = () => new Promise((resolve) => setTimeout(resolve, random() * 3));
 
         await Promise.all(shuffled(Object.values(writers), random).map((write) => write()));
@@ -301,6 +304,8 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
 
         await expectIndexAndPagesToAgree();
       },
+      // Four writers race on one database, so a busy host stretches the run.
+      30_000,
     );
   });
 
@@ -337,8 +342,7 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     await init({ crawled: true });
     const url = `/0/Docs${sfx("D1")}/a.txt${sfx("A1")}`;
     const resolves = async () =>
-      (await resolvePath(0, url.split("/").slice(2).map(decodeURIComponent), env as never))
-        ?.finalId;
+      (await resolve(url.split("/").slice(2).map(decodeURIComponent)))?.finalId;
 
     expect((await urlsOfIndex()).A1).toBe(url);
     expect(await resolves()).toBe("A1");
@@ -409,7 +413,7 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     const href = /href="([^"]+)"/.exec(html)![1];
     const segments = href.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
 
-    expect(await resolvePath(0, segments, env as never)).toMatchObject({ finalId: "A1" });
+    expect(await resolve(segments)).toMatchObject({ finalId: "A1" });
   });
 
   it("links a folder on the way to a URL that resolves while its twin is not indexed", async () => {
@@ -420,7 +424,7 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
     const href = /href="([^"]+)"/.exec(html)![1];
     const segments = href.split("/").slice(2).filter(Boolean).map(decodeURIComponent);
 
-    expect(await resolvePath(0, segments, env as never)).toMatchObject({ finalId: "A1" });
+    expect(await resolve(segments)).toMatchObject({ finalId: "A1" });
   });
 
   it("links a file to its URL in a search result", async () => {

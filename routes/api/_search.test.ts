@@ -191,20 +191,18 @@ describe("GET /api/search", () => {
       expect(html).toContain(`href="/0/tree-public.txt${sfx("twin")}"`);
     });
 
-    it("still answers, linking to the drives, when Google cannot give the root ID", async () => {
+    it("links to the drives, without asking Google, when no root ID is stored", async () => {
       await kv.delete("rootid:0");
       await kv.delete("rootid:1");
-      await kv.delete("auth:0:token");
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => new Response("down", { status: 503 })),
-      );
+      const upstream = vi.fn(async () => new Response("down", { status: 503 }));
+      vi.stubGlobal("fetch", upstream);
 
       try {
         const html = await search("tree-public");
 
         expect(html).toContain("tree-public.txt");
         expect(html).toContain('href="/0/"');
+        expect(upstream).not.toHaveBeenCalled();
       } finally {
         vi.unstubAllGlobals();
       }

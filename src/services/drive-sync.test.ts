@@ -12,38 +12,19 @@ import {
 } from "vite-plus/test";
 import { getPlatformProxy } from "wrangler";
 
-import { driveItems, driveRemovals, syncState } from "../../db/schema";
+import { crawlPending, driveItems, driveRemovals, syncState } from "../../db/schema";
 import type * as GoogleDrive from "../integrations/google-drive";
-import type { DriveChange, DriveChangesResult, ListedFile } from "../integrations/google-drive";
-import {
-  fetchChanges,
-  getStartPageToken,
-  listDirectory,
-  resolveFolderId,
-} from "../integrations/google-drive";
-import {
-  backfillD1Items,
-  crawlFolder,
-  initializeSyncState,
-  runIncrementalSync,
-  syncDrive,
-} from "./drive-sync";
+import type { DriveChange, DriveChangesResult, DriveFile } from "../integrations/google-drive";
+import { fetchChanges, getStartPageToken, listDriveFolder } from "../integrations/google-drive";
+import { crawlFolder, initializeSyncState, runIncrementalSync, syncDrive } from "./drive-sync";
 import { applyMigrations } from "../test-support/migrations";
 
 vi.mock("../integrations/google-drive", async (importOriginal) => ({
   ...(await importOriginal<typeof GoogleDrive>()),
   fetchChanges: vi.fn(),
   getStartPageToken: vi.fn(),
-  listDirectory: vi.fn(),
-  resolveFolderId: vi.fn(),
+  listDriveFolder: vi.fn(),
 }));
-
-const REAL_ROOT = "0AReAlRoOtId";
-
-// Google reports a My Drive's real root ID where the drive config says `root`.
-async function resolveRoot(_driveIdx: number, folderId: string): Promise<string> {
-  return folderId === "root" ? REAL_ROOT : folderId;
-}
 
 const sendCrawl = vi.hoisted(() => vi.fn());
 
@@ -82,13 +63,16 @@ function change(id: string, name: string, parent: string, mimeType = "text/plain
   return { fileId: id, removed: false, file: { id, name, mimeType, parents: [parent] } };
 }
 
-function listed(id: string, name: string, urlName = name, mimeType = "text/plain"): ListedFile {
-  return { id, name, urlName, mimeType };
+function listed(id: string, name: string, mimeType = "text/plain"): DriveFile {
+  return { id, name, mimeType };
 }
 
 function page(changes: DriveChange[], next: Partial<DriveChangesResult>): DriveChangesResult {
   return { changes, ...next };
 }
+
+const stateOf = async () =>
+  (await drizzle(env.DB).select().from(syncState).where(eq(syncState.driveIdx, 0)))[0];
 
 beforeAll(async () => {
   proxy = await getPlatformProxy({
@@ -109,12 +93,10 @@ beforeEach(async () => {
   await db.delete(driveItems);
   await db.delete(driveRemovals);
   await db.delete(syncState);
+  await db.delete(crawlPending);
   await db.insert(syncState).values({ driveIdx: 0, pageToken: "start", status: "idle" });
   vi.mocked(fetchChanges).mockReset();
-  vi.mocked(listDirectory).mockReset();
-  vi.mocked(resolveFolderId)
-    .mockReset()
-    .mockImplementation(async (_driveIdx, folderId) => folderId);
+  vi.mocked(listDriveFolder).mockReset();
 });
 
 describe("runIncrementalSync", () => {
@@ -156,6 +138,33 @@ describe("runIncrementalSync", () => {
     expect(await drizzle(env.DB).select().from(driveItems)).toEqual([
       expect.objectContaining({ id: "f", name: "a.txt", parentId: "unindexed-folder" }),
       expect.objectContaining({ id: "g", name: "b.txt", parentId: "root" }),
+    ]);
+  });
+
+  it("stores a changed shortcut the way a crawl does", async () => {
+    vi.mocked(fetchChanges).mockResolvedValueOnce(
+      page(
+        [
+          {
+            fileId: "link",
+            removed: false,
+            file: {
+              id: "link",
+              name: "Shared",
+              mimeType: "application/vnd.google-apps.shortcut",
+              parents: ["root"],
+              shortcutDetails: { targetId: "target", targetMimeType: FOLDER },
+            },
+          },
+        ],
+        { newStartPageToken: "next" },
+      ),
+    );
+
+    await runIncrementalSync(0, withDrives(1));
+
+    expect(await drizzle(env.DB).select().from(driveItems)).toMatchObject([
+      { id: "link", parentId: "root", mimeType: FOLDER, shortcutTargetId: "target" },
     ]);
   });
 
@@ -272,8 +281,6 @@ describe("syncDrive", () => {
 
   describe("while the drive has no page token", () => {
     const HOUR = 60 * 60 * 1000;
-    const stateOf = async () =>
-      (await drizzle(env.DB).select().from(syncState).where(eq(syncState.driveIdx, 0)))[0];
 
     beforeEach(async () => {
       await drizzle(env.DB).delete(syncState);
@@ -348,13 +355,25 @@ describe("syncDrive", () => {
       await syncDrive(0, withDrives(1));
       vi.mocked(getStartPageToken).mockResolvedValueOnce("tok");
 
-      await initializeSyncState(0, withDrives(1));
+      await initializeSyncState(0, "real-root", withDrives(1));
 
       expect(await stateOf()).toMatchObject({
         pageToken: "tok",
         status: "crawling",
         crawlRequestedAt: null,
+        crawledAt: null,
       });
+    });
+
+    it("leaves the root as the only folder the crawl has yet to read", async () => {
+      vi.mocked(getStartPageToken).mockResolvedValue("tok");
+      await drizzle(env.DB).insert(crawlPending).values({ driveIdx: 0, folderId: "left-over" });
+
+      await initializeSyncState(0, "real-root", withDrives(1));
+
+      expect(await drizzle(env.DB).select().from(crawlPending)).toEqual([
+        { driveIdx: 0, folderId: "real-root" },
+      ]);
     });
 
     it("releases the claim when the queue send fails, so the next tick retries", async () => {
@@ -368,69 +387,10 @@ describe("syncDrive", () => {
   });
 });
 
-describe("backfillD1Items", () => {
-  it("writes a folder of several hundred files within D1's bound-parameter limit", async () => {
-    const files = Array.from({ length: 250 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
-
-    await backfillD1Items(0, "root", files, env);
-
-    expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(250);
-  });
-
-  it("stores the real root ID as the parent of a My Drive's top-level files", async () => {
-    vi.mocked(resolveFolderId).mockImplementation(resolveRoot);
-
-    await backfillD1Items(0, "root", [listed("f", "a.txt")], env);
-
-    const [row] = await drizzle(env.DB).select().from(driveItems);
-    expect(row).toMatchObject({ id: "f", parentId: REAL_ROOT });
-  });
-
-  it("stores each file's own name, not the name its URL uses", async () => {
-    await backfillD1Items(
-      0,
-      "dir",
-      [listed("a", "x.txt", "x.txt (dupID: a)"), listed("b", "x.txt", "x.txt (dupID: b)")],
-      env,
-    );
-
-    const rows = await drizzle(env.DB).select().from(driveItems);
-    expect(rows.map((row) => [row.id, row.name, row.parentId])).toEqual([
-      ["a", "x.txt", "dir"],
-      ["b", "x.txt", "dir"],
-    ]);
-  });
-
-  it("leaves a row it already holds as it is", async () => {
-    await drizzle(env.DB).insert(driveItems).values({
-      id: "f",
-      driveIdx: 0,
-      parentId: "new-home",
-      name: "new.txt",
-      mimeType: "text/plain",
-    });
-
-    await backfillD1Items(0, "stale-listing", [listed("f", "old.txt")], env);
-
-    const [row] = await drizzle(env.DB).select().from(driveItems);
-    expect(row).toMatchObject({ name: "new.txt", parentId: "new-home" });
-  });
-
-  it("leaves one row per file when a crawl and a browse list the same folder", async () => {
-    const files = [listed("sub", "sub", "sub", FOLDER), listed("f", "a.txt")];
-    vi.mocked(listDirectory).mockResolvedValueOnce(files);
-
-    await backfillD1Items(0, "root", files, env);
-    await crawlFolder(0, "root", env);
-
-    expect(await drizzle(env.DB).select().from(driveItems)).toHaveLength(2);
-  });
-});
-
 describe("crawlFolder", () => {
   it("stores every file of a 200-file listing", async () => {
     const files = Array.from({ length: 200 }, (_, i) => listed(`f${i}`, `f${i}.txt`));
-    vi.mocked(listDirectory).mockResolvedValueOnce(files);
+    vi.mocked(listDriveFolder).mockResolvedValueOnce(files);
 
     const result = await crawlFolder(0, "root", env);
 
@@ -439,28 +399,78 @@ describe("crawlFolder", () => {
   });
 
   it("returns the folders to crawl next and counts the files", async () => {
-    vi.mocked(listDirectory).mockResolvedValueOnce([
-      listed("sub", "sub", "sub", FOLDER),
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([
+      listed("sub", "sub", FOLDER),
       listed("f", "a.txt"),
     ]);
 
     expect(await crawlFolder(0, "root", env)).toEqual({ fileCount: 1, folderIds: ["sub"] });
   });
 
-  it("stores each file's own name, not the name its URL uses", async () => {
-    vi.mocked(listDirectory).mockResolvedValueOnce([
-      listed("a", "x.txt", "x.txt (dupID: a)"),
-      listed("b", "x.txt", "x.txt (dupID: b)"),
+  it("stores a shortcut under its own ID, with the mime type of its target", async () => {
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([
+      {
+        id: "link",
+        name: "Shared",
+        mimeType: "application/vnd.google-apps.shortcut",
+        shortcutDetails: { targetId: "target", targetMimeType: FOLDER },
+      },
     ]);
 
-    await crawlFolder(0, "dir", env);
+    const result = await crawlFolder(0, "dir", env);
 
-    const rows = await drizzle(env.DB).select().from(driveItems);
-    expect(rows.map((row) => row.name)).toEqual(["x.txt", "x.txt"]);
+    expect(await drizzle(env.DB).select().from(driveItems)).toMatchObject([
+      { id: "link", parentId: "dir", mimeType: FOLDER, shortcutTargetId: "target" },
+    ]);
+    // The target is read where it lives. Following the shortcut could loop through a parent.
+    expect(result.folderIds).toEqual([]);
+  });
+
+  it("does not finish the crawl while a subfolder is unread", async () => {
+    await initializeSyncState(0, "root", withDrives(1));
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([
+      listed("a", "a", FOLDER),
+      listed("b", "b", FOLDER),
+    ]);
+    await crawlFolder(0, "root", env);
+    expect((await stateOf()).crawledAt).toBeNull();
+
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([]);
+    await crawlFolder(0, "a", env);
+    expect((await stateOf()).crawledAt).toBeNull();
+
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([listed("c", "c", FOLDER)]);
+    await crawlFolder(0, "b", env);
+    expect((await stateOf()).crawledAt).toBeNull();
+
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([]);
+    await crawlFolder(0, "c", env);
+    expect((await stateOf()).crawledAt).not.toBeNull();
+    expect(await drizzle(env.DB).select().from(crawlPending)).toEqual([]);
+  });
+
+  it("keeps the time the crawl finished when a folder is read again", async () => {
+    vi.mocked(listDriveFolder).mockResolvedValue([]);
+    await drizzle(env.DB).update(syncState).set({ crawledAt: 5 });
+
+    await crawlFolder(0, "root", env);
+
+    expect((await stateOf()).crawledAt).toBe(5);
+  });
+
+  it("queues more subfolders than one statement can bind", async () => {
+    await initializeSyncState(0, "root", withDrives(1));
+    vi.mocked(listDriveFolder).mockResolvedValueOnce(
+      Array.from({ length: 120 }, (_, i) => listed(`d${i}`, `d${i}`, FOLDER)),
+    );
+
+    await crawlFolder(0, "root", env);
+
+    expect(await drizzle(env.DB).select().from(crawlPending)).toHaveLength(120);
   });
 
   it("stores nothing for an empty folder", async () => {
-    vi.mocked(listDirectory).mockResolvedValueOnce([]);
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([]);
 
     expect(await crawlFolder(0, "root", env)).toEqual({ fileCount: 0, folderIds: [] });
     expect(await drizzle(env.DB).select().from(driveItems)).toEqual([]);
@@ -470,11 +480,11 @@ describe("crawlFolder", () => {
     const db = drizzle(env.DB);
     const file = { ...listed("f1", "old.txt"), size: 1 };
 
-    vi.mocked(listDirectory).mockResolvedValueOnce([file]);
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([file]);
     await crawlFolder(0, "folderA", env);
 
-    vi.mocked(listDirectory).mockResolvedValueOnce([
-      { ...file, name: "new.md", urlName: "new.md", mimeType: "text/markdown", size: 2 },
+    vi.mocked(listDriveFolder).mockResolvedValueOnce([
+      { ...file, name: "new.md", mimeType: "text/markdown", size: 2 },
     ]);
     await crawlFolder(0, "folderB", env);
 
@@ -488,6 +498,7 @@ describe("crawlFolder", () => {
         size: 2,
         modifiedTime: null,
         feedSeq: null,
+        shortcutTargetId: null,
       },
     ]);
   });
@@ -507,7 +518,7 @@ describe("crawlFolder", () => {
       await drizzle(env.DB)
         .insert(driveItems)
         .values([row("kept", "dir"), row("gone", "dir"), row("elsewhere", "other")]);
-      vi.mocked(listDirectory).mockResolvedValueOnce([listed("kept", "kept.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listed("kept", "kept.txt")]);
 
       await crawlFolder(0, "dir", env);
 
@@ -518,7 +529,7 @@ describe("crawlFolder", () => {
       await drizzle(env.DB)
         .insert(driveItems)
         .values([row("a", "dir"), row("b", "dir")]);
-      vi.mocked(listDirectory).mockResolvedValueOnce([]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([]);
 
       await crawlFolder(0, "dir", env);
 
@@ -526,13 +537,11 @@ describe("crawlFolder", () => {
     });
 
     it("removes more rows than one statement can bind", async () => {
-      await backfillD1Items(
-        0,
-        "dir",
+      vi.mocked(listDriveFolder).mockResolvedValueOnce(
         Array.from({ length: 250 }, (_, i) => listed(`f${i}`, `f${i}.txt`)),
-        env,
       );
-      vi.mocked(listDirectory).mockResolvedValueOnce([listed("f0", "f0.txt")]);
+      await crawlFolder(0, "dir", env);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listed("f0", "f0.txt")]);
 
       await crawlFolder(0, "dir", env);
 
@@ -540,8 +549,8 @@ describe("crawlFolder", () => {
     });
 
     it("keeps a row the feed wrote after the listing was read", async () => {
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
-        const read: ListedFile[] = [];
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
+        const read: DriveFile[] = [];
         vi.mocked(fetchChanges).mockResolvedValueOnce(
           page([change("late", "late.txt", "dir")], { newStartPageToken: "next" }),
         );
@@ -556,7 +565,7 @@ describe("crawlFolder", () => {
 
     it("does not write back a file the feed removed after the listing was read", async () => {
       await drizzle(env.DB).insert(driveItems).values(row("doomed", "dir"));
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
         const read = [listed("doomed", "doomed.txt"), listed("stays", "stays.txt")];
         vi.mocked(fetchChanges).mockResolvedValueOnce(
           page([{ fileId: "doomed", removed: true }], { newStartPageToken: "next" }),
@@ -571,7 +580,7 @@ describe("crawlFolder", () => {
     });
 
     it("does not write back a file the feed removed when it was never indexed", async () => {
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
         const read = [listed("doomed", "doomed.txt")];
         vi.mocked(fetchChanges).mockResolvedValueOnce(
           page([{ fileId: "doomed", removed: true }], { newStartPageToken: "next" }),
@@ -586,7 +595,7 @@ describe("crawlFolder", () => {
     });
 
     it("writes a file the feed removed and then restored", async () => {
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
         const read = [listed("back", "back.txt")];
         vi.mocked(fetchChanges)
           .mockResolvedValueOnce(page([{ fileId: "back", removed: true }], { nextPageToken: "p2" }))
@@ -607,7 +616,7 @@ describe("crawlFolder", () => {
         page([{ fileId: "old", removed: true }], { newStartPageToken: "next" }),
       );
       await runIncrementalSync(0, withDrives(1));
-      vi.mocked(listDirectory).mockResolvedValueOnce([listed("old", "old.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listed("old", "old.txt")]);
 
       await crawlFolder(0, "dir", env);
 
@@ -638,7 +647,7 @@ describe("crawlFolder", () => {
     }
 
     it("keeps a move the feed applied while the listing was being read", async () => {
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
         const read = [listing("a.txt")];
         await applyFeed(move("folderB"));
         return read;
@@ -650,10 +659,10 @@ describe("crawlFolder", () => {
     });
 
     it("keeps a move the feed applied to a row the crawl had already written", async () => {
-      vi.mocked(listDirectory).mockResolvedValueOnce([listing("a.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listing("a.txt")]);
       await crawlFolder(0, "folderA", env);
 
-      vi.mocked(listDirectory).mockImplementationOnce(async () => {
+      vi.mocked(listDriveFolder).mockImplementationOnce(async () => {
         const read = [listing("a.txt")];
         await applyFeed(move("folderB"));
         return read;
@@ -665,7 +674,7 @@ describe("crawlFolder", () => {
 
     it("applies a listing read after the feed wrote the row", async () => {
       await applyFeed(move("folderA"));
-      vi.mocked(listDirectory).mockResolvedValueOnce([listing("renamed.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listing("renamed.txt")]);
 
       await crawlFolder(0, "folderB", env);
 
@@ -676,7 +685,7 @@ describe("crawlFolder", () => {
       await drizzle(env.DB)
         .insert(driveItems)
         .values({ id: "f1", driveIdx: 0, parentId: "x", name: "old.txt", mimeType: "text/plain" });
-      vi.mocked(listDirectory).mockResolvedValueOnce([listing("new.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listing("new.txt")]);
 
       await crawlFolder(0, "folderB", env);
 
@@ -705,7 +714,7 @@ describe("crawlFolder", () => {
         .mockResolvedValueOnce(page([move("folderB")], { nextPageToken: "p2" }))
         .mockResolvedValueOnce(page([upsert("g", "g.txt")], { newStartPageToken: "next" }));
       await runIncrementalSync(0, withDrives(1));
-      vi.mocked(listDirectory).mockResolvedValueOnce([listing("later.txt")]);
+      vi.mocked(listDriveFolder).mockResolvedValueOnce([listing("later.txt")]);
 
       await crawlFolder(0, "folderC", env);
 
