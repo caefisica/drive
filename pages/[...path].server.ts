@@ -7,15 +7,12 @@ import { getDrives, parseDriveIdx, summarizeDrive } from "../src/config";
 import {
   getAccessToken,
   getFileKind,
-  getFileMetadata,
   isWorkspaceFile,
-  listDirectory,
-  resolvePath,
   WORKSPACE_EXTENSION,
 } from "../src/integrations/google-drive";
 import { signStreamToken } from "../src/services/crypto";
-import { backfillD1Items } from "../src/services/drive-sync";
 import { checkFolderPassword, getUnlockedFolders } from "../src/services/folder-access";
+import { crawledRoot, listFolder, notCrawledResponse, resolvePath } from "../src/services/listing";
 
 export type Props = InferProps<typeof loader>;
 
@@ -106,13 +103,19 @@ export const loader = defineHandler(async (c) => {
   const publicDrives = drives.map(summarizeDrive);
   const publicDrive = summarizeDrive(drive);
 
-  const resolved = await resolvePath(driveIdx, segments, c.env);
+  const root = await crawledRoot(driveIdx, c.env);
+
+  if (!root) {
+    return notCrawledResponse();
+  }
+
+  const resolved = await resolvePath(driveIdx, segments, root, c.env);
 
   if (!resolved) {
     return c.json({ error: "not found" }, 404);
   }
 
-  const { ids, finalId } = resolved;
+  const { ids, finalId, item: file } = resolved;
   const unlockedFolders = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
   const locked = await checkFolderPassword(driveIdx, ids, unlockedFolders, c.env);
 
@@ -128,14 +131,13 @@ export const loader = defineHandler(async (c) => {
     };
   }
 
-  if (isDirectory) {
-    const files = await listDirectory(driveIdx, finalId, c.env);
+  // Only the drive's root has no item, and its path is always a directory.
+  if (isDirectory || !file) {
+    const files = await listFolder(driveIdx, finalId, c.env);
     const items = files.map((file) => ({
       ...file,
       kind: getFileKind(file.mimeType),
     }));
-
-    c.executionCtx.waitUntil(backfillD1Items(driveIdx, finalId, files, c.env));
 
     return {
       type: "directory" as const,
@@ -148,7 +150,6 @@ export const loader = defineHandler(async (c) => {
     };
   }
 
-  const file = await getFileMetadata(driveIdx, finalId, c.env);
   const kind = getFileKind(file.mimeType);
   const streamToken = await signStreamToken(finalId, driveIdx, c.env.STREAM_SECRET);
 

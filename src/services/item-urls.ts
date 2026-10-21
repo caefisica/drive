@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 
 import { getDrive } from "../config";
-import { FOLDER_MIME, resolveFolderId } from "../integrations/google-drive";
+import { FOLDER_MIME, getRootId } from "../integrations/google-drive";
 import { idUrlName, urlPath } from "../url-names";
 
 // Drive nests folders far less deeply. The bound keeps a parent cycle in the index from looping.
@@ -60,12 +60,8 @@ export async function itemUrls(
 
     const drive = getDrive(driveIdx, env);
 
-    // Search answers from D1, so a Google failure here must not fail it. Without the root ID the
-    // links of that drive point at the drive.
-    rootIds.set(
-      driveIdx,
-      drive ? await resolveFolderId(driveIdx, drive.rootId, env).catch(() => null) : null,
-    );
+    // Search never asks Google. Without a stored root ID the links of that drive point at the drive.
+    rootIds.set(driveIdx, drive ? await getRootId(driveIdx, drive.rootId, env) : null);
   }
 
   for (const { id, driveIdx } of files) {

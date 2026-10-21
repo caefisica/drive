@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Link } from "@void/vue";
-import type { FileKind, ListedFile } from "../integrations/google-drive";
+import type { FileKind } from "../integrations/google-drive";
+import type { ListedFile } from "../services/listing";
 
 defineProps<{
   items: Array<ListedFile & { kind: FileKind }>;

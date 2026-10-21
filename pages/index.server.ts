@@ -1,8 +1,9 @@
 import { defineHandler } from "void";
 import type { InferProps } from "void";
 import { getDrives, summarizeDrive } from "../src/config";
-import { listDirectory, getFileKind } from "../src/integrations/google-drive";
+import { getFileKind } from "../src/integrations/google-drive";
 import { checkFolderPassword, getUnlockedFolders } from "../src/services/folder-access";
+import { crawledRoot, listFolder, notCrawledResponse } from "../src/services/listing";
 
 export type Props = InferProps<typeof loader>;
 
@@ -13,6 +14,12 @@ export const loader = defineHandler(async (c) => {
   }
 
   const drive = drives[0];
+  const root = await crawledRoot(0, c.env);
+
+  if (!root) {
+    return notCrawledResponse();
+  }
+
   const unlockedFolders = await getUnlockedFolders(c.req.header("cookie"), c.env.UNLOCK_SECRET);
   const locked = await checkFolderPassword(0, [drive.rootId], unlockedFolders, c.env);
 
@@ -27,7 +34,7 @@ export const loader = defineHandler(async (c) => {
     };
   }
 
-  const files = await listDirectory(0, drive.rootId, c.env);
+  const files = await listFolder(0, root, c.env);
 
   const items = files.map((f) => ({ ...f, kind: getFileKind(f.mimeType) }));
 
