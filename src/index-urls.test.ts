@@ -286,8 +286,9 @@ describe.each(kinds)("the index of $name", ({ config, root }) => {
 
         await expectIndexAndPagesToAgree();
       },
-      // Four writers race on one database, so a busy host stretches the run.
-      30_000,
+      // Four writers race on one database through the proxy, and a busy host stretches the
+      // run: 30 to 40 s idle here, several times that under CPU load.
+      120_000,
     );
   });
 
