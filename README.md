@@ -18,8 +18,8 @@ audio seek. Search finds files by name across all drives.
 
 ```sh
 mise install
-mise run install
-mise run dev                 # needs .env with DRIVES and the two secrets
+bun install --frozen-lockfile
+bun run dev                  # needs .env with DRIVES and the two secrets
 ```
 
 `mise install` provides the Bun and Node versions pinned in

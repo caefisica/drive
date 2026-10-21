@@ -4,13 +4,13 @@
 
 ```sh
 mise install          # installs the pinned Bun and Node versions
-mise run install      # runs `vp config`, which installs the git hook
-mise run dev
+bun install --frozen-lockfile  # runs `vp config`, which installs the git hook
+bun run dev
 ```
 
 `.env` needs `DRIVES`, `STREAM_SECRET` and `UNLOCK_SECRET`. Void reads no other
-dotenv file. See [Configuration](configuration.md). `mise run dev` applies the
-D1 migrations to a local database and serves on the port it prints.
+dotenv file. See [Configuration](configuration.md). `bun run dev` applies the D1
+migrations to a local database and serves on the port it prints.
 
 ## Layout
 
@@ -29,13 +29,14 @@ D1 migrations to a local database and serves on the port it prints.
 ## Checks
 
 ```sh
-mise run check  # lint, typecheck, test and build; writes no tracked file
-mise run fix    # apply safe lint fixes and format every file
+bun run check  # build, lint, typecheck and test. Writes no tracked file
+bun run fix    # build, apply safe lint fixes and format every file
 ```
 
-`check` runs `lint`, `typecheck`, `test` and `build`, each also a task of its
-own. They depend on `build`, which generates the `.void/tsconfig.json` that
-type-checking reads, so a fresh clone needs no extra step.
+`check` runs `build`, `lint`, `typecheck` and `test`, each also a script of its
+own. `build` comes first because it generates the `.void/tsconfig.json` that
+type-checking reads, so a fresh clone needs no extra step. Run `bun run build`
+before `typecheck` or `test` alone.
 
 The pre-commit hook runs `vp staged`, which runs `vp check --fix` on staged
 files ([vite.config.ts](../vite.config.ts)).
@@ -55,16 +56,16 @@ itself, so `bun` must be on the `PATH`.
 Edit [db/schema.ts](../db/schema.ts), then generate a migration:
 
 ```sh
-mise run db:generate
+bun run db:generate
 ```
 
 Commit the new SQL file and its `meta` snapshot with the schema change.
 
 ## Documentation
 
-`mise run lint` checks Markdown at 80 columns with prose wrapped, from the `fmt`
+`bun run lint` checks Markdown at 80 columns with prose wrapped, from the `fmt`
 override in [vite.config.ts](../vite.config.ts). Rewrite the files with:
 
 ```sh
-mise run fix
+bun run fix
 ```

@@ -1,7 +1,21 @@
 {
   "type": "module",
   "scripts": {
-    "postinstall": "vp config"
+    "postinstall": "vp config",
+    "build": "vp build",
+    "dev": "vp dev",
+    "preview": "vp preview",
+    "lint": "vp lint --deny-warnings && vp fmt --check",
+    "typecheck": "vp check --no-fmt --no-lint",
+    "test": "vp test run",
+    "check": "bun run build && bun run lint && bun run typecheck && bun run test",
+    "fix": "bun run build && vp lint --fix && vp fmt",
+    "db:generate": "vp exec void db generate",
+    "db:migrate": "vp exec void db migrate",
+    "db:migrate:remote": "vp exec void db migrate --remote",
+    "release:connect": "vp exec void connect --platform cloudflare",
+    "release:secret": "vp exec void secret put",
+    "release:app": "vp exec void deploy"
   },
   "dependencies": {
     "@void/vue": "^1.1.12",
