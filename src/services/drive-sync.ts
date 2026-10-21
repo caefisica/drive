@@ -6,15 +6,14 @@ import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 
 import { queues } from "void/queues";
 
-import { driveItems, driveRemovals, syncState } from "../../db/schema";
+import { crawlPending, driveItems, driveRemovals, syncState } from "../../db/schema";
 import { getDrive } from "../config";
 import {
   fetchChanges,
   getStartPageToken,
-  listDirectory,
+  listDriveFolder,
   FOLDER_MIME,
   PASSWORD_FILE,
-  resolveFolderId,
   type DriveFile,
 } from "../integrations/google-drive";
 
@@ -71,20 +70,18 @@ async function readFeedSeq(db: ReturnType<typeof makeDb>, driveIdx: number): Pro
   return state?.feedSeq ?? 0;
 }
 
-// A row holds what Drive says about one file: its own name, not the name its URL uses.
-function itemRow(
-  driveIdx: number,
-  parentId: string | null,
-  file: Pick<DriveFile, "id" | "name" | "mimeType" | "size" | "modifiedTime">,
-) {
+// A row holds what Drive says about one file: its own name, not the name its URL uses. A shortcut
+// keeps its own ID and takes the mime type of its target.
+function itemRow(driveIdx: number, parentId: string | null, file: DriveFile) {
   return {
     id: file.id,
     driveIdx,
     parentId,
     name: file.name,
-    mimeType: file.mimeType,
+    mimeType: file.shortcutDetails?.targetMimeType ?? file.mimeType,
     size: file.size,
     modifiedTime: file.modifiedTime ? new Date(file.modifiedTime).getTime() : null,
+    shortcutTargetId: file.shortcutDetails?.targetId ?? null,
   };
 }
 
@@ -95,6 +92,9 @@ const REMOVAL_TTL_MS = 60 * 60 * 1000;
 // D1 binds at most 100 parameters, and a delete by ID also binds the drive, the parent and the
 // counter.
 const IDS_PER_DELETE = 90;
+
+// A pending folder binds two parameters.
+const PENDING_PER_INSERT = 50;
 
 // An init that has not stored a page token this long after it was queued is presumed lost.
 const INIT_STALE_MS = 60 * 60 * 1000;
@@ -167,7 +167,6 @@ export async function runIncrementalSync(
     while (true) {
       const result = await fetchChanges(driveIdx, pageToken, env);
       const statements: BatchItem<"sqlite">[] = [];
-      const touchedIds: string[] = [];
       const now = Date.now();
 
       for (const change of result.changes) {
@@ -187,7 +186,6 @@ export async function runIncrementalSync(
               }),
           );
 
-          touchedIds.push(change.fileId);
           continue;
         }
 
@@ -203,7 +201,6 @@ export async function runIncrementalSync(
               .where(and(eq(driveItems.driveIdx, driveIdx), eq(driveItems.id, change.file.id))),
           );
 
-          touchedIds.push(change.file.id);
           continue;
         }
 
@@ -227,11 +224,10 @@ export async function runIncrementalSync(
                 size: row.size,
                 modifiedTime: row.modifiedTime,
                 feedSeq: row.feedSeq,
+                shortcutTargetId: row.shortcutTargetId,
               },
             }),
         );
-
-        touchedIds.push(change.file.id);
       }
 
       if (statements.length > 0) {
@@ -253,8 +249,6 @@ export async function runIncrementalSync(
         );
 
         await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
-
-        await Promise.all(touchedIds.map((id) => invalidateKvForFile(id, driveIdx, env)));
       }
 
       if (result.newStartPageToken) {
@@ -284,15 +278,6 @@ export async function runIncrementalSync(
 
     throw error;
   }
-}
-
-async function invalidateKvForFile(
-  fileId: string,
-  driveIdx: number,
-  env: CloudEnv["Bindings"],
-): Promise<void> {
-  // Parent directories are not known here. Invalidate file metadata cache only.
-  await env.KV.delete(`meta:${driveIdx}:${fileId}`);
 }
 
 // Deletes the rows of a folder that its listing lacks. A row the feed stamped after the counter was
@@ -335,8 +320,8 @@ export async function crawlFolder(
 }> {
   const db = makeDb(env);
   const feedSeq = await readFeedSeq(db, driveIdx);
-  // Read the counter before listing. A cached listing could predate that read.
-  const files = await listDirectory(driveIdx, folderId, env, { fresh: true });
+  // Read the counter before listing, so a change the feed applies after the read outranks the listing.
+  const files = await listDriveFolder(driveIdx, folderId, env);
 
   await insertRows(
     db,
@@ -353,6 +338,7 @@ export async function crawlFolder(
             mimeType: incoming(driveItems.mimeType),
             size: incoming(driveItems.size),
             modifiedTime: incoming(driveItems.modifiedTime),
+            shortcutTargetId: incoming(driveItems.shortcutTargetId),
           },
           setWhere: sql`${driveItems.feedSeq} is null or ${driveItems.feedSeq} <= ${feedSeq}`,
         }),
@@ -373,7 +359,16 @@ export async function crawlFolder(
 
   await deleteAbsent(db, driveIdx, folderId, files, feedSeq);
 
+  // A shortcut to a folder is not a folder here: its target is read where the target lives, and a
+  // shortcut that points back up the tree would otherwise send the crawl round in circles.
   const folders = files.filter((file) => file.mimeType === FOLDER_MIME);
+
+  await markCrawled(
+    db,
+    driveIdx,
+    folderId,
+    folders.map((folder) => folder.id),
+  );
 
   return {
     fileCount: files.length - folders.length,
@@ -381,50 +376,81 @@ export async function crawlFolder(
   };
 }
 
+// Takes a folder off the pending list and puts its subfolders on it in one transaction, so the list
+// is empty only when no folder is read or queued. `crawled_at` is set in that same batch.
+async function markCrawled(
+  db: ReturnType<typeof makeDb>,
+  driveIdx: number,
+  folderId: string,
+  subfolderIds: string[],
+): Promise<void> {
+  const statements: BatchItem<"sqlite">[] = [
+    db
+      .delete(crawlPending)
+      .where(and(eq(crawlPending.driveIdx, driveIdx), eq(crawlPending.folderId, folderId))),
+  ];
+
+  for (let start = 0; start < subfolderIds.length; start += PENDING_PER_INSERT) {
+    statements.push(
+      db
+        .insert(crawlPending)
+        .values(
+          subfolderIds
+            .slice(start, start + PENDING_PER_INSERT)
+            .map((id) => ({ driveIdx, folderId: id })),
+        )
+        .onConflictDoNothing(),
+    );
+  }
+
+  statements.push(
+    db
+      .update(syncState)
+      .set({ crawledAt: Date.now() })
+      .where(
+        and(
+          eq(syncState.driveIdx, driveIdx),
+          isNull(syncState.crawledAt),
+          sql`not exists (select 1 from ${crawlPending} where ${crawlPending.driveIdx} = ${driveIdx})`,
+        ),
+      ),
+  );
+
+  await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+// A drive starts over: the crawl begins at the root and no page lists the drive until it ends.
 export async function initializeSyncState(
   driveIdx: number,
+  rootId: string,
   env: CloudEnv["Bindings"],
 ): Promise<void> {
   const db = makeDb(env);
   const pageToken = await getStartPageToken(driveIdx, env);
   const now = Date.now();
 
-  await db
-    .insert(syncState)
-    .values({
-      driveIdx,
-      pageToken,
-      lastSyncedAt: now,
-      crawlRequestedAt: null,
-      status: "crawling",
-    })
-    .onConflictDoUpdate({
-      target: syncState.driveIdx,
-      set: {
+  await db.batch([
+    db
+      .insert(syncState)
+      .values({
+        driveIdx,
         pageToken,
         lastSyncedAt: now,
+        crawledAt: null,
         crawlRequestedAt: null,
         status: "crawling",
-      },
-    });
-}
-
-export async function backfillD1Items(
-  driveIdx: number,
-  parentId: string,
-  files: DriveFile[],
-  env: CloudEnv["Bindings"],
-): Promise<void> {
-  if (files.length === 0) {
-    return;
-  }
-
-  const db = makeDb(env);
-  const realParentId = await resolveFolderId(driveIdx, parentId, env);
-
-  await insertRows(
-    db,
-    files.map((file) => itemRow(driveIdx, realParentId, file)),
-    (chunk) => db.insert(driveItems).values(chunk).onConflictDoNothing(),
-  );
+      })
+      .onConflictDoUpdate({
+        target: syncState.driveIdx,
+        set: {
+          pageToken,
+          lastSyncedAt: now,
+          crawledAt: null,
+          crawlRequestedAt: null,
+          status: "crawling",
+        },
+      }),
+    db.delete(crawlPending).where(eq(crawlPending.driveIdx, driveIdx)),
+    db.insert(crawlPending).values({ driveIdx, folderId: rootId }),
+  ]);
 }

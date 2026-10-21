@@ -26,7 +26,7 @@ export default defineQueue<CrawlMessage>(async (batch, env) => {
 
       const rootId = await resolveFolderId(driveIdx, drive.rootId, env);
 
-      await initializeSyncState(driveIdx, env);
+      await initializeSyncState(driveIdx, rootId, env);
 
       await queues.crawl.send({ type: "folder", driveIdx, folderId: rootId });
 

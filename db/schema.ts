@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const driveItems = sqliteTable(
   "drive_items",
@@ -11,6 +11,9 @@ export const driveItems = sqliteTable(
     size: integer("size"),
     modifiedTime: integer("modified_time"),
     feedSeq: integer("feed_seq"),
+    // The file a shortcut points at. `mimeType` holds the mime type of that target, so a shortcut to
+    // a folder is listed and opened as a folder.
+    shortcutTargetId: text("shortcut_target_id"),
   },
   (t) => [index("idx_di_siblings").on(t.driveIdx, t.parentId, t.name)],
 );
@@ -28,10 +31,22 @@ export const driveRemovals = sqliteTable(
   (t) => [index("idx_dr_drive_seq").on(t.driveIdx, t.feedSeq)],
 );
 
+// A folder the crawl has queued and not yet read. The crawl of a drive is complete when none is left.
+export const crawlPending = sqliteTable(
+  "crawl_pending",
+  {
+    driveIdx: integer("drive_idx").notNull(),
+    folderId: text("folder_id").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.driveIdx, t.folderId] })],
+);
+
 export const syncState = sqliteTable("sync_state", {
   driveIdx: integer("drive_idx").primaryKey(),
   pageToken: text("page_token"),
   lastSyncedAt: integer("last_synced_at"),
+  // Set when the crawl has read every folder. Pages list a drive only after it is set.
+  crawledAt: integer("crawled_at"),
   crawlRequestedAt: integer("crawl_requested_at"),
   feedSeq: integer("feed_seq").notNull().default(0),
   status: text("status")
