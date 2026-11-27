@@ -18,20 +18,20 @@
     "release:app": "vp exec void deploy"
   },
   "dependencies": {
-    "@void/vue": "^1.8.0",
+    "@void/vue": "^1.11.0",
     "drizzle-orm": "^0.45.4",
     "markdown-it": "^15.0.3",
     "shiki": "^4.6.0",
-    "unocss": "^66.12.0",
-    "vite-plus": "^1.6.0",
-    "void": "^1.8.0",
+    "unocss": "^66.13.0",
+    "vite-plus": "^1.7.0",
+    "void": "^1.11.0",
     "vue": "^3.5.45"
   },
   "devDependencies": {
-    "@iconify-json/lucide": "^1.2.154",
+    "@iconify-json/lucide": "^1.2.157",
     "@types/markdown-it": "^14.2.0",
     "typescript": "^7.0.2",
-    "wrangler": "^4.161.0"
+    "wrangler": "^4.165.0"
   },
   "packageManager": "bun@1.4.4"
 }
